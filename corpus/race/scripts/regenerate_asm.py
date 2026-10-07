@@ -245,12 +245,16 @@ def _report_drift(targets: list[str], out_root: Path) -> int:
     drifted: list[str] = []
     for target in targets:
         fresh_dir, committed_dir = out_root / target, ASM_DIR / target
-        if not fresh_dir.is_dir():
-            continue
-        for fresh in sorted(fresh_dir.glob("*.s")):
-            committed = committed_dir / fresh.name
+        names = {path.name for path in fresh_dir.glob("*.s")} | {
+            path.name for path in committed_dir.glob("*.s")
+        }
+        for name in sorted(names):
+            fresh, committed = fresh_dir / name, committed_dir / name
+            if not fresh.is_file():
+                drifted.append(f"{target}/{name}: no longer generated")
+                continue
             if not committed.is_file():
-                drifted.append(f"{target}/{fresh.name}: not committed")
+                drifted.append(f"{target}/{name}: not committed")
                 continue
             if fresh.read_text() != committed.read_text():
                 diff = list(

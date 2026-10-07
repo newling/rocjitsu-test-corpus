@@ -87,3 +87,26 @@ def test_compilation_preserves_existing_caller_output(tmp_path, monkeypatch):
         MODULE.compile_device_asm(kernel, "gfx950", Path("asm/gfx950/kernel.s"), [])
 
     assert unrelated.read_text() == "another invocation's output\n"
+
+
+@pytest.mark.parametrize(
+    ("committed", "fresh", "expected"),
+    [
+        ({"kernel.s": "same"}, {"kernel.s": "same"}, 0),
+        ({"kernel.s": "old"}, {"kernel.s": "new"}, 1),
+        ({}, {"kernel.s": "new"}, 1),
+        ({"kernel.s": "same", "obsolete.s": "old"}, {"kernel.s": "same"}, 1),
+        ({"obsolete.s": "old"}, {}, 1),
+    ],
+)
+def test_drift_checks_both_artifact_inventories(tmp_path, monkeypatch, committed, fresh, expected):
+    asm_dir = tmp_path / "committed"
+    fresh_dir = tmp_path / "fresh"
+    monkeypatch.setattr(MODULE, "ASM_DIR", asm_dir)
+    for directory, files in ((asm_dir, committed), (fresh_dir, fresh)):
+        for name, contents in files.items():
+            path = directory / "gfx950" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+
+    assert MODULE._report_drift(["gfx950"], fresh_dir) == expected
