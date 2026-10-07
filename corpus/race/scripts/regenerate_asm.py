@@ -106,6 +106,8 @@ def compile_device_asm(kernel: Path, target: str, out: Path, extra_flags: list[s
 
     hipcc sometimes ignores ``-o`` under ``--cuda-device-only`` and writes an
     auto-named file into the working directory instead, so both are checked.
+    Refuse to overwrite an existing auto-named file. Replace the pinned output
+    only after compilation and normalization succeed.
     """
     tool = hipcc()
     root = rocm_path()
@@ -116,26 +118,35 @@ def compile_device_asm(kernel: Path, target: str, out: Path, extra_flags: list[s
         "-S",
         "--cuda-device-only",
         f"--offload-arch={target}",
-        str(kernel),
-        "-o",
-        str(out),
+        str(kernel.resolve()),
     ]
     if (root / "include").is_dir():
         argv += ["-I", str(root / "include")]
     argv += extra_flags
 
     auto_named = Path.cwd() / f"{kernel.stem}-hip-amdgcn-amd-amdhsa-{target}.s"
-    for stale in (out, auto_named):
-        stale.unlink(missing_ok=True)
+    if auto_named.exists():
+        raise CompileError(
+            f"{kernel.name} ({target}): refusing to overwrite {auto_named}; "
+            "run from a directory without an existing compiler output"
+        )
 
-    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        raise CompileError(f"{kernel.name} ({target}):\n{proc.stderr.strip()}")
-    if not out.is_file():
-        if not auto_named.is_file():
-            raise CompileError(f"{kernel.name} ({target}): hipcc produced no output file")
-        shutil.move(str(auto_named), str(out))
-    out.write_text(normalize(out.read_text()))
+    with tempfile.TemporaryDirectory(prefix=".race-asm-", dir=out.parent.resolve()) as directory:
+        temporary = Path(directory) / out.name
+        try:
+            proc = subprocess.run(
+                [*argv, "-o", str(temporary)], capture_output=True, text=True, check=False
+            )
+            if proc.returncode != 0:
+                raise CompileError(f"{kernel.name} ({target}):\n{proc.stderr.strip()}")
+            if not temporary.is_file():
+                if not auto_named.is_file():
+                    raise CompileError(f"{kernel.name} ({target}): hipcc produced no output file")
+                shutil.move(str(auto_named), str(temporary))
+            temporary.write_text(normalize(temporary.read_text()))
+            temporary.replace(out)
+        finally:
+            auto_named.unlink(missing_ok=True)
 
 
 # --- Corpus ------------------------------------------------------------------

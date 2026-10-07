@@ -1,0 +1,89 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import sys
+
+import pytest
+
+
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "corpus"
+    / "race"
+    / "scripts"
+    / "regenerate_asm.py"
+)
+SPEC = importlib.util.spec_from_file_location("race_regenerate_asm", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+def _fake_hipcc(tmp_path: Path, monkeypatch, body: str) -> None:
+    root = tmp_path / "rocm"
+    compiler = root / "bin" / "hipcc"
+    compiler.parent.mkdir(parents=True)
+    compiler.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nimport sys\n{body}\n"
+    )
+    compiler.chmod(0o755)
+    monkeypatch.setenv("ROCM_PATH", str(root))
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_failed_compilation_preserves_existing_assembly(tmp_path, monkeypatch, returncode):
+    _fake_hipcc(tmp_path, monkeypatch, f"sys.exit({returncode})")
+    monkeypatch.chdir(tmp_path)
+    kernel = tmp_path / "kernel.hip"
+    kernel.write_text("// source\n")
+    out = tmp_path / "asm" / "gfx950" / "kernel.s"
+    out.parent.mkdir(parents=True)
+    out.write_text("previous pinned assembly\n")
+
+    with pytest.raises(MODULE.CompileError):
+        MODULE.compile_device_asm(kernel, "gfx950", out, [])
+
+    assert out.read_text() == "previous pinned assembly\n"
+
+
+@pytest.mark.parametrize("auto_named", [False, True])
+def test_compilation_replaces_output_after_normalization(tmp_path, monkeypatch, auto_named):
+    output_expr = (
+        "Path('kernel-hip-amdgcn-amd-amdhsa-gfx950.s')"
+        if auto_named
+        else "Path(sys.argv[sys.argv.index('-o') + 1])"
+    )
+    _fake_hipcc(
+        tmp_path,
+        monkeypatch,
+        f"{output_expr}.write_text('__hip_cuid_0123456789abcdef\\n')",
+    )
+    monkeypatch.chdir(tmp_path)
+    kernel = Path("kernel.hip")
+    kernel.write_text("// source\n")
+    out = Path("asm/gfx950/kernel.s")
+    out.parent.mkdir(parents=True)
+    out.write_text("previous pinned assembly\n")
+
+    MODULE.compile_device_asm(kernel, "gfx950", out, [])
+
+    assert out.read_text() == "__hip_cuid_corpus\n"
+    assert not Path("kernel-hip-amdgcn-amd-amdhsa-gfx950.s").exists()
+
+
+def test_compilation_preserves_existing_caller_output(tmp_path, monkeypatch):
+    _fake_hipcc(tmp_path, monkeypatch, "sys.exit(1)")
+    monkeypatch.chdir(tmp_path)
+    kernel = Path("kernel.hip")
+    kernel.write_text("// source\n")
+    unrelated = Path("kernel-hip-amdgcn-amd-amdhsa-gfx950.s")
+    unrelated.write_text("another invocation's output\n")
+
+    with pytest.raises(MODULE.CompileError):
+        MODULE.compile_device_asm(kernel, "gfx950", Path("asm/gfx950/kernel.s"), [])
+
+    assert unrelated.read_text() == "another invocation's output\n"
