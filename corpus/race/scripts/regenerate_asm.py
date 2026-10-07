@@ -5,12 +5,13 @@
 """
 Regenerate the committed device assembly under ``asm/``.
 
-This is the **only** part of the corpus that needs a HIP compiler, and it is
-meant to be run by a person, not by CI::
+Regenerating device assembly needs a HIP compiler. Mutation discovery reads the
+pinned assembly without compiling it; building an executable still needs the
+HIP toolchain for its host object and link. Regeneration is an explicit action::
 
     python corpus/race/scripts/regenerate_asm.py                 # every target
     python corpus/race/scripts/regenerate_asm.py --target gfx950
-    python corpus/race/scripts/regenerate_asm.py --check         # CI drift gate
+    python corpus/race/scripts/regenerate_asm.py --check         # compiler drift check
 
 Why the assembly is committed rather than compiled per run: the compiler decides
 how many ``s_wait_*`` instructions a kernel contains, and the corpus derives one

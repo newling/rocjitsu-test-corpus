@@ -16,11 +16,19 @@
 #                This is NOT the resource a hazard lands on. Removing a loadcnt
 #                wait on a global load usually produces a hazard on the
 #                destination VGPR, because the race is on the register rather
-#                than on memory. generate.py combines this with the removed
-#                wait's counter type to tag each mutant with the resource it
-#                actually races on (global/lds/scratch/vgpr/agpr/sgpr).
-#   hazard       the dominant hazard kind the kernel is built to produce
-#   waits        wait counters the kernel exercises
+#                than on memory. generate.py uses the counter and nearby
+#                instructions to propose resource tags. Those guesses need
+#                review: counter plus access alone does not determine the
+#                raced resource (global/lds/scratch/vgpr/agpr/sgpr).
+#   hazard       the kernel's source-level hazard pattern. An individual wait
+#                mutation may expose a different hazard, or no hazard at all;
+#                review per-mutant expectations rather than inheriting this
+#                field as proof of the induced hazard.
+#   waits        descriptive counter coverage, using gfx1250 counter names.
+#                This is not an exhaustive opcode list or a mutation filter.
+#                On gfx950, vector-memory waits use vmcnt, while scalar-memory
+#                and LDS waits share lgkmcnt. Inspect the operations and their
+#                dependencies to determine which resource is left unguarded.
 #
 # Resource names are corpus-facing rather than any one detector's internal
 # spelling; each adapter maps them onto its own vocabulary.
@@ -251,10 +259,16 @@ description = "RAW from a WMMA result into a transcendental, via rocWMMA"
 # nothing here is correct, so the mutant is exempt from scoring rather than
 # counted as a miss.
 #
-# `site` is checked against the instruction actually found at that ordinal when
-# the manifest is generated. If codegen shifts and the ordinal lands on a
-# different instruction, generation fails loudly instead of quietly excusing
-# the wrong one.
+# `ordinal` is zero-based within the mutation sites of this kind in each target
+# file, in emission order. For "wait", count s_wait* instructions after excluding
+# s_wait_xcnt. A combined wait is one site, and its entire instruction is removed.
+# Thus ordinal 3 below names the epilogue's s_wait_kmcnt, after two s_wait_kmcnt
+# instructions and one s_wait_loadcnt; the intervening s_wait_xcnt is not counted.
+#
+# Exemptions apply to every target the case supports. `site` checks the mnemonic
+# at that ordinal when the manifest is generated. A changed mnemonic is rejected,
+# but a different dependency guarded by the same mnemonic is not detected.
+# Revalidate the reason against the assembly and launch inputs after regeneration.
 [[case.exempt]]
 kind = "wait"
 ordinal = 3

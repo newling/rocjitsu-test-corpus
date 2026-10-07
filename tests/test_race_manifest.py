@@ -43,3 +43,24 @@ def test_gfx1250_declared_waits_exist_in_pinned_assembly():
             missing[case["id"]] = sorted(absent)
 
     assert not missing, f"Declared wait counters absent from gfx1250 assembly: {missing}"
+
+
+def test_wait_exemptions_name_existing_pinned_sites():
+    for case in CASES:
+        for exemption in case.get("exempt", []):
+            if exemption["kind"] != "wait":
+                continue
+            for directory in (CORPUS_ROOT / "asm").iterdir():
+                if not directory.is_dir():
+                    continue
+                if case["requires"] and directory.name not in case["requires"]:
+                    continue
+                assembly = (directory / f"{case['kernel']}.s").read_text()
+                sites = [
+                    mnemonic
+                    for mnemonic in re.findall(r"^\s+(s_wait\w+)\s+\S+", assembly, re.MULTILINE)
+                    if mnemonic != "s_wait_xcnt"
+                ]
+                ordinal = exemption["ordinal"]
+                assert 0 <= ordinal < len(sites), (case["id"], directory.name, ordinal)
+                assert sites[ordinal] == exemption["site"], (case["id"], directory.name, ordinal)
