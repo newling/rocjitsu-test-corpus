@@ -179,6 +179,8 @@ hazard = "RAW"
 waits = ["tensorcnt", "dscnt"]
 description = "Tensor DMA to LDS RAW at a nonzero descriptor base"
 
+# --- Cross-wave LDS barrier epochs -------------------------------------------
+
 [[case]]
 id = "fa-barrier-epoch"
 kernel = "fa_barrier_epoch"
@@ -186,7 +188,7 @@ requires = ["gfx1250"]
 mutate = ["wait"]
 access = "lds"
 hazard = "RAW"
-waits = ["tensorcnt", "dscnt"]
+waits = ["dscnt"]
 description = "Cross-wave LDS reuse across barrier epochs"
 
 # --- Transcendentals ---------------------------------------------------------
