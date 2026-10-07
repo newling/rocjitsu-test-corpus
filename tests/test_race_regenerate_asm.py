@@ -137,3 +137,38 @@ def test_regenerate_retains_compiler_diagnostic(tmp_path, monkeypatch):
     assert len(failures) == 1
     assert "kernel.hip (gfx950)" in failures[0]
     assert "fatal error: rocwmma/rocwmma.hpp not found" in failures[0]
+
+
+def test_cli_preserves_quoted_include_path(tmp_path, monkeypatch):
+    _fake_hipcc(
+        tmp_path,
+        monkeypatch,
+        "assert '-Iheaders with spaces' in sys.argv, sys.argv\n"
+        "Path(sys.argv[sys.argv.index('-o') + 1]).write_text('assembly\\n')",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(MODULE, "KERNELS_DIR", tmp_path)
+    monkeypatch.setattr(MODULE, "load_cases", lambda: [{"kernel": "kernel"}])
+    monkeypatch.setattr(MODULE, "ASM_DIR", tmp_path / "asm")
+    monkeypatch.setattr(MODULE.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT), "--check", "--target", "gfx950", '--cxxflags=-I"headers with spaces"'],
+    )
+    (tmp_path / "kernel.hip").write_text("// source\n")
+    committed = tmp_path / "asm" / "gfx950" / "kernel.s"
+    committed.parent.mkdir(parents=True)
+    committed.write_text("assembly\n")
+
+    assert MODULE.main() == 0
+
+
+def test_cli_reports_unmatched_flag_quote(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), '--cxxflags=-I"unterminated'])
+
+    with pytest.raises(SystemExit) as error:
+        MODULE.main()
+
+    assert error.value.code == 2
+    assert "--cxxflags: No closing quotation" in capsys.readouterr().err

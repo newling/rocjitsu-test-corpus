@@ -45,6 +45,7 @@ import argparse
 import difflib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -205,7 +206,7 @@ def main() -> int:
     parser.add_argument(
         "--cxxflags",
         default="",
-        help="Extra compiler flags, e.g. -I/path/to/rocwmma/include",
+        help="Extra compiler flags using shell quoting, e.g. -I/path/to/rocwmma/include",
     )
     parser.add_argument(
         "--check",
@@ -220,7 +221,10 @@ def main() -> int:
 
     cases = load_cases()
     targets = targets_for(cases, args.target)
-    extra_flags = args.cxxflags.split() if args.cxxflags else []
+    try:
+        extra_flags = shlex.split(args.cxxflags)
+    except ValueError as error:
+        parser.error(f"--cxxflags: {error}")
 
     out_root = Path(tempfile.mkdtemp(prefix="race-asm-")) if args.check else ASM_DIR
     print(f"regenerating {', '.join(targets)} -> {out_root}")
