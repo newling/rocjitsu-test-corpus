@@ -244,7 +244,7 @@ access = "global"
 hazard = "RAW"
 waits = ["loadcnt", "kmcnt"]
 # Needs the rocWMMA headers. Point at them with --cxxflags
-# "-I/path/to/rocwmma/include"; the case is skipped when they are not found.
+# "-I/path/to/rocwmma/include"; regeneration fails if they are not found.
 description = "RAW from a WMMA result into a transcendental, via rocWMMA"
 
 # A mutation that provably does not introduce a race. A detector reporting

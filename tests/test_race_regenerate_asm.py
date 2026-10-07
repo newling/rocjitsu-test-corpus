@@ -118,3 +118,22 @@ def test_drift_checks_both_artifact_inventories(tmp_path, monkeypatch, committed
             path.write_text(contents)
 
     assert MODULE._report_drift(["gfx950"], fresh_dir) == expected
+
+
+def test_regenerate_retains_compiler_diagnostic(tmp_path, monkeypatch):
+    _fake_hipcc(
+        tmp_path,
+        monkeypatch,
+        "sys.stderr.write('fatal error: rocwmma/rocwmma.hpp not found\\n'); sys.exit(1)",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(MODULE, "KERNELS_DIR", tmp_path)
+    monkeypatch.setattr(MODULE, "load_cases", lambda: [{"kernel": "kernel"}])
+    (tmp_path / "kernel.hip").write_text("// source\n")
+
+    written, failures = MODULE.regenerate(["gfx950"], [], tmp_path / "asm")
+
+    assert written == 0
+    assert len(failures) == 1
+    assert "kernel.hip (gfx950)" in failures[0]
+    assert "fatal error: rocwmma/rocwmma.hpp not found" in failures[0]
