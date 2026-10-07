@@ -166,6 +166,9 @@ def test_cli_preserves_quoted_include_path(tmp_path, monkeypatch):
 
 def test_cli_reports_unmatched_flag_quote(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), '--cxxflags=-I"unterminated'])
+    monkeypatch.setattr(
+        MODULE, "regenerate", lambda *args: pytest.fail("invalid quoting reached compilation")
+    )
 
     with pytest.raises(SystemExit) as error:
         MODULE.main()
