@@ -75,18 +75,26 @@ def test_compilation_replaces_output_after_normalization(tmp_path, monkeypatch, 
     assert not Path("kernel-hip-amdgcn-amd-amdhsa-gfx950.s").exists()
 
 
-def test_compilation_preserves_existing_caller_output(tmp_path, monkeypatch):
+@pytest.mark.parametrize("symlink", [False, True])
+def test_compilation_preserves_existing_caller_output(tmp_path, monkeypatch, symlink):
     _fake_hipcc(tmp_path, monkeypatch, "sys.exit(1)")
     monkeypatch.chdir(tmp_path)
     kernel = Path("kernel.hip")
     kernel.write_text("// source\n")
     unrelated = Path("kernel-hip-amdgcn-amd-amdhsa-gfx950.s")
-    unrelated.write_text("another invocation's output\n")
+    if symlink:
+        unrelated.symlink_to("missing-target")
+    else:
+        unrelated.write_text("another invocation's output\n")
 
     with pytest.raises(MODULE.CompileError):
         MODULE.compile_device_asm(kernel, "gfx950", Path("asm/gfx950/kernel.s"), [])
 
-    assert unrelated.read_text() == "another invocation's output\n"
+    if symlink:
+        assert unrelated.is_symlink()
+        assert unrelated.readlink() == Path("missing-target")
+    else:
+        assert unrelated.read_text() == "another invocation's output\n"
 
 
 @pytest.mark.parametrize(

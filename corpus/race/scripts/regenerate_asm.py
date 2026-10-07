@@ -125,7 +125,7 @@ def compile_device_asm(kernel: Path, target: str, out: Path, extra_flags: list[s
     argv += extra_flags
 
     auto_named = Path.cwd() / f"{kernel.stem}-hip-amdgcn-amd-amdhsa-{target}.s"
-    if auto_named.exists():
+    if auto_named.exists() or auto_named.is_symlink():
         raise CompileError(
             f"{kernel.name} ({target}): refusing to overwrite {auto_named}; "
             "run from a directory without an existing compiler output"
