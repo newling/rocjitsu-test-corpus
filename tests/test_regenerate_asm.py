@@ -222,3 +222,68 @@ def test_check_fails_on_uncommitted_file(drift_dirs, capsys):
     (fresh_root / "gfx950" / "new.s").write_text(assembly())
     assert check(fresh_root) == 1
     assert "gfx950/new.s: not committed" in capsys.readouterr().err
+
+
+def test_check_fails_on_obsolete_committed_file(drift_dirs, capsys):
+    committed, fresh_root = drift_dirs
+    (committed / "k.s").write_text(assembly())
+    (fresh_root / "gfx950" / "k.s").write_text(assembly())
+    (committed / "obsolete.s").write_text(assembly())
+    assert check(fresh_root) == 1
+    assert "gfx950/obsolete.s: not regenerated" in capsys.readouterr().err
+
+
+def test_check_fails_when_fresh_target_directory_is_missing(drift_dirs, capsys):
+    committed, fresh_root = drift_dirs
+    (committed / "k.s").write_text(assembly())
+    (fresh_root / "gfx950").rmdir()
+    assert check(fresh_root) == 1
+    assert "gfx950/k.s: not regenerated" in capsys.readouterr().err
+
+
+@pytest.fixture
+def cli_case(monkeypatch, tmp_path, pinned, kernel):
+    install_fake_compiler(monkeypatch, tmp_path, "output")
+    monkeypatch.setattr(regen, "CORPUS_ROOT", tmp_path / "corpus" / "race")
+    monkeypatch.setattr(regen, "KERNELS_DIR", kernel.parent)
+    monkeypatch.setattr(regen, "ASM_DIR", pinned.parent.parent)
+    monkeypatch.setattr(regen, "load_cases", lambda: [{"id": "k", "kernel": "kernel"}])
+    monkeypatch.setattr(regen.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["regenerate_asm.py", "--check", "--target", "gfx950"])
+    pinned.write_text("kernel:\n\ts_endpgm\n.globl __hip_cuid_corpus\n")
+    return pinned
+
+
+def test_main_check_is_incomplete_when_case_is_skipped(cli_case, monkeypatch, capsys):
+    monkeypatch.setattr(
+        regen,
+        "load_cases",
+        lambda: [{"id": "k", "kernel": "kernel", "headers": ["rocwmma/rocwmma.hpp"]}],
+    )
+    before = cli_case.read_bytes()
+    assert regen.main() == 2
+    output = capsys.readouterr()
+    assert "rocwmma/rocwmma.hpp" in output.out
+    assert "check incomplete" in output.err
+    assert "matches this toolchain" not in output.out
+    assert cli_case.read_bytes() == before
+
+
+def test_main_check_is_incomplete_with_no_selected_cases(cli_case, monkeypatch, capsys):
+    monkeypatch.setattr(
+        regen,
+        "load_cases",
+        lambda: [{"id": "k", "kernel": "kernel", "requires": ["gfx1250"]}],
+    )
+    assert regen.main() == 2
+    output = capsys.readouterr()
+    assert "no cases selected" in output.err
+    assert "matches this toolchain" not in output.out
+
+
+def test_main_check_uses_expected_inventory(cli_case, monkeypatch, capsys):
+    # A missing committed file must not hide a missing regeneration output.
+    cli_case.unlink()
+    monkeypatch.setattr(regen, "regenerate", lambda *args: (0, [], []))
+    assert regen.main() == 1
+    assert "gfx950/kernel.s: not regenerated" in capsys.readouterr().err

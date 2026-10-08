@@ -317,6 +317,15 @@ def main() -> int:
     cases = load_cases()
     targets = targets_for(cases, args.target)
     extra_flags = absolute_flags(args.cxxflags.split() if args.cxxflags else [], Path.cwd())
+    expected = {
+        (target, f"{case['kernel']}.s")
+        for target in targets
+        for case in cases
+        if not case.get("requires") or target in case["requires"]
+    }
+    if args.check and not expected:
+        print("check incomplete: no cases selected for the requested targets", file=sys.stderr)
+        return 2
 
     out_root = Path(tempfile.mkdtemp(prefix="race-asm-")) if args.check else ASM_DIR
     print(f"regenerating {', '.join(targets)} -> {out_root}")
@@ -329,6 +338,9 @@ def main() -> int:
     if failures:
         print("\nfailed kernels' committed assembly is untouched", file=sys.stderr)
         return 2
+    if args.check and skipped:
+        print(f"\ncheck incomplete: {len(skipped)} case/target pair(s) were skipped", file=sys.stderr)
+        return 2
 
     if not args.check:
         print(f"\nwrote {written} file(s) under {ASM_DIR.relative_to(CORPUS_ROOT.parent.parent)}")
@@ -337,10 +349,12 @@ def main() -> int:
         print("manifest records by ordinal move with them.")
         return 0
 
-    return _report_drift(targets, out_root)
+    return _report_drift(targets, out_root, expected)
 
 
-def _report_drift(targets: list[str], out_root: Path) -> int:
+def _report_drift(
+    targets: list[str], out_root: Path, expected: set[tuple[str, str]] | None = None
+) -> int:
     """
     Compare freshly generated assembly against what is committed.
 
@@ -353,11 +367,15 @@ def _report_drift(targets: list[str], out_root: Path) -> int:
     provenance: dict[tuple[str, str], list[str]] = {}
     for target in targets:
         fresh_dir, committed_dir = out_root / target, ASM_DIR / target
-        if not fresh_dir.is_dir():
-            continue
-        for fresh in sorted(fresh_dir.glob("*.s")):
-            name = f"{target}/{fresh.name}"
-            committed = committed_dir / fresh.name
+        names = {path.name for path in fresh_dir.glob("*.s")}
+        names.update(path.name for path in committed_dir.glob("*.s"))
+        names.update(name for arch, name in expected or () if arch == target)
+        for filename in sorted(names):
+            name = f"{target}/{filename}"
+            fresh, committed = fresh_dir / filename, committed_dir / filename
+            if not fresh.is_file():
+                drifted.append(f"{name}: not regenerated")
+                continue
             if not committed.is_file():
                 drifted.append(f"{name}: not committed")
                 continue
