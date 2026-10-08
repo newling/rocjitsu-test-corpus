@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import textwrap
 from pathlib import Path
@@ -36,13 +37,15 @@ def install_fake_compiler(monkeypatch, tmp_path: Path, behaviour: str) -> None:
       auto-named  ignore -o and write the auto-named file into the working
                   directory, as hipcc sometimes does under --cuda-device-only
     """
-    compiler = tmp_path / "fake-hipcc"
+    compiler = tmp_path / "rocm" / "bin" / "hipcc"
+    compiler.parent.mkdir(parents=True, exist_ok=True)
     compiler.write_text(
         textwrap.dedent(
             f"""\
             #!{sys.executable}
-            import os, sys
+            import json, os, sys
             args = sys.argv[1:]
+            open({str(tmp_path / "compiler-argv.json")!r}, "w").write(json.dumps(args))
             if {behaviour!r} == "fail":
                 sys.stderr.write("error: unknown argument\\n")
                 sys.exit(1)
@@ -59,8 +62,7 @@ def install_fake_compiler(monkeypatch, tmp_path: Path, behaviour: str) -> None:
         )
     )
     compiler.chmod(0o755)
-    monkeypatch.setattr(regen, "hipcc", lambda: compiler)
-    monkeypatch.setattr(regen, "rocm_path", lambda: tmp_path / "rocm")
+    monkeypatch.setenv("ROCM_PATH", str(tmp_path / "rocm"))
 
 
 @pytest.fixture
@@ -297,3 +299,25 @@ def test_main_preserves_compiler_diagnostic(cli_case, monkeypatch, tmp_path, cap
     assert "kernel.hip (gfx950)" in output.err
     assert "error: unknown argument" in output.err
     assert cli_case.read_bytes() == before
+
+
+def test_main_preserves_quoted_compiler_flags(cli_case, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["regenerate_asm.py", "--check", "--target", "gfx950", '--cxxflags=-I"headers with spaces"'],
+    )
+    assert regen.main() == 0
+    argv = json.loads((tmp_path / "compiler-argv.json").read_text())
+    assert f"-I{tmp_path / 'headers with spaces'}" in argv
+    assert "with" not in argv
+
+
+def test_main_rejects_malformed_flags_before_compiling(cli_case, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sys, "argv", ["regenerate_asm.py", '--cxxflags=-I"unclosed'])
+    with pytest.raises(SystemExit) as error:
+        regen.main()
+    assert error.value.code == 2
+    assert "invalid --cxxflags" in capsys.readouterr().err
+    assert not (tmp_path / "compiler-argv.json").exists()

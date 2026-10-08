@@ -52,6 +52,7 @@ import argparse
 import difflib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -316,7 +317,11 @@ def main() -> int:
 
     cases = load_cases()
     targets = targets_for(cases, args.target)
-    extra_flags = absolute_flags(args.cxxflags.split() if args.cxxflags else [], Path.cwd())
+    try:
+        flags = shlex.split(args.cxxflags)
+    except ValueError as error:
+        parser.error(f"invalid --cxxflags: {error}")
+    extra_flags = absolute_flags(flags, Path.cwd())
     expected = {
         (target, f"{case['kernel']}.s")
         for target in targets
