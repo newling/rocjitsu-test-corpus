@@ -152,26 +152,26 @@ def missing_headers(case: dict, flags: list[str]) -> list[str]:
 
 def rocm_path() -> Path:
     if (explicit := os.environ.get("ROCM_PATH")):
-        return Path(explicit)
+        return Path(explicit).resolve()
     if shutil.which("rocm-sdk"):
         proc = subprocess.run(
             ["rocm-sdk", "path", "--root"], capture_output=True, text=True, check=False
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            return Path(proc.stdout.strip())
+            return Path(proc.stdout.strip()).resolve()
     if Path("/opt/rocm").is_dir():
         return Path("/opt/rocm")
     raise SystemExit("set ROCM_PATH, or make rocm-sdk available on PATH")
 
 
-def hipcc() -> Path:
+def find_hip_compiler() -> Path:
     root = rocm_path()
     for candidate in (root / "bin" / "hipcc", root / "llvm" / "bin" / "clang++"):
         if candidate.is_file():
             return candidate
     if (found := shutil.which("hipcc")):
-        return Path(found)
-    raise SystemExit(f"no hipcc under {root}; set ROCM_PATH to a ROCm install")
+        return Path(found).resolve()
+    raise SystemExit(f"no HIP compiler under {root}; set ROCM_PATH to a ROCm install")
 
 
 def compile_device_asm(kernel: Path, target: str, out: Path, extra_flags: list[str]) -> None:
@@ -186,7 +186,7 @@ def compile_device_asm(kernel: Path, target: str, out: Path, extra_flags: list[s
     so a failed or interrupted run leaves the pinned file exactly as it was.
     *extra_flags* must not hold relative paths; see absolute_flags.
     """
-    tool = hipcc()
+    tool = find_hip_compiler()
     root = rocm_path()
     with tempfile.TemporaryDirectory(prefix="race-asm-compile-") as scratch_dir:
         scratch = Path(scratch_dir)

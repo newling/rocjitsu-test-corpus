@@ -317,6 +317,12 @@ def test_main_preserves_quoted_compiler_flags(cli_case, monkeypatch, tmp_path):
     assert "with" not in argv
 
 
+def test_main_accepts_relative_rocm_path(cli_case, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ROCM_PATH", "rocm")
+    assert regen.main() == 0
+
+
 def test_main_rejects_malformed_flags_before_compiling(cli_case, monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sys, "argv", ["regenerate_asm.py", '--cxxflags=-I"unclosed'])
     with pytest.raises(SystemExit) as error:
