@@ -287,3 +287,13 @@ def test_main_check_uses_expected_inventory(cli_case, monkeypatch, capsys):
     monkeypatch.setattr(regen, "regenerate", lambda *args: (0, [], []))
     assert regen.main() == 1
     assert "gfx950/kernel.s: not regenerated" in capsys.readouterr().err
+
+
+def test_main_preserves_compiler_diagnostic(cli_case, monkeypatch, tmp_path, capsys):
+    install_fake_compiler(monkeypatch, tmp_path, "fail")
+    before = cli_case.read_bytes()
+    assert regen.main() == 2
+    output = capsys.readouterr()
+    assert "kernel.hip (gfx950)" in output.err
+    assert "error: unknown argument" in output.err
+    assert cli_case.read_bytes() == before

@@ -286,7 +286,7 @@ def regenerate(
                 compile_device_asm(kernel, target, out, extra_flags)
                 written += 1
             except CompileError as error:
-                failures.append(str(error).splitlines()[0])
+                failures.append(str(error))
     return written, failures, skipped
 
 
