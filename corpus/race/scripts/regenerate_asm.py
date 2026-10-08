@@ -2,48 +2,12 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""
-Regenerate the committed device assembly under ``asm/``.
+"""Regenerate pinned device assembly, or check it with a local HIP compiler.
 
-This is the **only** part of the corpus that needs a HIP compiler, and it is
-meant to be run by a person, not by CI::
-
-    python corpus/race/scripts/regenerate_asm.py                 # every target
-    python corpus/race/scripts/regenerate_asm.py --target gfx950
-    python corpus/race/scripts/regenerate_asm.py --check         # CI drift gate
-
-``--check`` compares assembly text only. ``scripts/check_cases.py`` checks the
-case inventory in ``cases.toml`` against ``kernels/`` and the committed
-assembly, and needs no compiler; run it after regenerating.
-
-Why the assembly is committed rather than compiled per run: the compiler decides
-how many ``s_wait_*`` instructions a kernel contains, and the corpus derives one
-mutant per wait. Compiling at test time therefore lets a toolchain bump silently
-reshape the corpus -- a different mutant count, different case IDs, different
-results -- so two runs months apart are not comparing the same thing. Freezing
-the assembly makes the set of injected defects fixed, and makes regenerating it
-a deliberate, reviewable commit.
-
-The cost is that the corpus stops tracking current codegen. A compiler that
-starts emitting a new wait pattern will not be exercised until someone runs this
-script. That is the intended trade: for scoring detectors, a stable set of known
-defects beats following the compiler.
-
-Each ``.s`` carries an ``.ident`` line naming the compiler that produced it, so
-the provenance of a committed artifact is visible in the artifact itself. It is
-kept, but ``--check`` compares it apart from the rest of the file: a compiler
-revision changes every ``.ident`` line even when it emits identical code, and
-that is reported as a provenance change, not as drift.
-
-One normalization is applied on the way out. hipcc stamps each translation unit
-with a ``__hip_cuid_<hash>`` symbol that changes on every invocation, even for
-identical input on an identical toolchain, which would make every regeneration
-a 37-file diff of pure noise and make drift detection impossible. The hash is
-rewritten to a fixed placeholder. Nothing cross-checks it: the device code is
-located through the ``__hip_fatbin_<hash>`` symbol read out of the *host*
-object at link time, so the cuid in the device assembly is unused -- verified by
-linking committed assembly against a freshly compiled host object with a
-deliberately mismatched cuid and running it successfully.
+See corpus/race/README.md for the layout, prerequisites and manual workflow.
+Compiler provenance in .ident is retained and compared separately. The random
+__hip_cuid_<hash> symbol is normalized: linking uses the host object's separate
+__hip_fatbin_<hash> symbol, so the device CUID need not match the host CUID.
 """
 
 from __future__ import annotations
@@ -293,7 +257,9 @@ def regenerate(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Regenerate pinned device assembly or check it for drift."
+    )
     parser.add_argument(
         "--target",
         action="append",
@@ -309,9 +275,9 @@ def main() -> int:
         "--check",
         action="store_true",
         help=(
-            "Do not write. Regenerate into a temporary directory and report any "
-            "difference from what is committed. A difference means this "
-            "toolchain generates different code, not merely a different build."
+            "Regenerate in a temporary directory and check the selected inventory "
+            "and assembly text. Report .ident-only changes separately; skipped "
+            "cases make the check incomplete."
         ),
     )
     args = parser.parse_args()
@@ -352,9 +318,8 @@ def main() -> int:
 
         if not args.check:
             print(f"\nwrote {written} file(s) under {ASM_DIR.relative_to(CORPUS_ROOT.parent.parent)}")
-            print("Review the diff before committing: regenerating is a deliberate change")
-            print("to the corpus, and where waits or loads moved, the mutation sites the")
-            print("manifest records by ordinal move with them.")
+            print("Review the diff before committing and revalidate downstream mutation")
+            print("expectations when instructions or their ordering change.")
             return 0
 
         return _report_drift(targets, out_root, expected)
@@ -417,12 +382,10 @@ def _report_drift(
     for entry in drifted:
         print(f"  {entry}", file=sys.stderr)
     print(
-        "\nThis toolchain's output differs from the committed assembly outside the\n"
-        ".ident line: in instructions, directives or metadata. It is not build\n"
-        "noise -- the one irreproducible part of hipcc's output is normalized away\n"
-        "before comparing. Regenerate only when you intend to move the corpus onto\n"
-        "current codegen. Where waits or sub-dword loads were added, removed or\n"
-        "reordered, the mutation sites the manifest records by ordinal move too.",
+        "\nThe selected inventory or assembly text differs outside .ident.\n"
+        "Review changes to instructions, directives and metadata before updating\n"
+        "the pinned files. Changes to instructions or their ordering also require\n"
+        "revalidating downstream mutation expectations.",
         file=sys.stderr,
     )
     return 1

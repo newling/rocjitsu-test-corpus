@@ -16,6 +16,7 @@ corpus/
   vulkan/     Pinned Vulkan compute and texel-buffer CTS selections.
   runtime-cts/ Direct-KFD aql/ and capability-gated pm4/ suites.
   tensile/    gfx1250 TensileLite configs and generated artifacts.
+  race/       HIP baseline kernels, pinned assembly, and regeneration tools.
   benchmarks/ Parameterized Triton benchmarks and reused upstream kernels.
 
 tests/
@@ -66,6 +67,8 @@ CI orchestration and simulator configurations remain in rocm-systems.
 - `corpus/tensile/`: gfx1250 TensileLite YAML configs, manifests, numeric smoke
   lists, and generated HSACO/code-object artifacts. This corpus is run by the
   Tensile scripts, not by `tests/test_corpus.py`.
+- `corpus/race/`: HIP baseline kernels and pinned device assembly for instruction
+  mutation testing. See the [inventory and regeneration guide](corpus/race/README.md).
 
 `tests/test_corpus.py` discovers and runs the `iree`, `kernels`, `cts`, `dbt`,
 `semantics`, `llama`, and `vulkan` suites. By default it uses target `gfx1201` and
