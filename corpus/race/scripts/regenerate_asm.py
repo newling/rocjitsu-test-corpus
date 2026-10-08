@@ -58,6 +58,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from contextlib import nullcontext
 from pathlib import Path
 
 CORPUS_ROOT = Path(__file__).resolve().parent.parent
@@ -332,29 +333,31 @@ def main() -> int:
         print("check incomplete: no cases selected for the requested targets", file=sys.stderr)
         return 2
 
-    out_root = Path(tempfile.mkdtemp(prefix="race-asm-")) if args.check else ASM_DIR
-    print(f"regenerating {', '.join(targets)} -> {out_root}")
+    context = tempfile.TemporaryDirectory(prefix="race-asm-") if args.check else nullcontext(ASM_DIR)
+    with context as directory:
+        out_root = Path(directory)
+        print(f"regenerating {', '.join(targets)} -> {out_root}")
 
-    written, failures, skipped = regenerate(targets, extra_flags, out_root)
-    for skip in skipped:
-        print(f"  skip: {skip}")
-    for failure in failures:
-        print(f"  FAIL: {failure}", file=sys.stderr)
-    if failures:
-        print("\nfailed kernels' committed assembly is untouched", file=sys.stderr)
-        return 2
-    if args.check and skipped:
-        print(f"\ncheck incomplete: {len(skipped)} case/target pair(s) were skipped", file=sys.stderr)
-        return 2
+        written, failures, skipped = regenerate(targets, extra_flags, out_root)
+        for skip in skipped:
+            print(f"  skip: {skip}")
+        for failure in failures:
+            print(f"  FAIL: {failure}", file=sys.stderr)
+        if failures:
+            print("\nfailed kernels' committed assembly is untouched", file=sys.stderr)
+            return 2
+        if args.check and skipped:
+            print(f"\ncheck incomplete: {len(skipped)} case/target pair(s) were skipped", file=sys.stderr)
+            return 2
 
-    if not args.check:
-        print(f"\nwrote {written} file(s) under {ASM_DIR.relative_to(CORPUS_ROOT.parent.parent)}")
-        print("Review the diff before committing: regenerating is a deliberate change")
-        print("to the corpus, and where waits or loads moved, the mutation sites the")
-        print("manifest records by ordinal move with them.")
-        return 0
+        if not args.check:
+            print(f"\nwrote {written} file(s) under {ASM_DIR.relative_to(CORPUS_ROOT.parent.parent)}")
+            print("Review the diff before committing: regenerating is a deliberate change")
+            print("to the corpus, and where waits or loads moved, the mutation sites the")
+            print("manifest records by ordinal move with them.")
+            return 0
 
-    return _report_drift(targets, out_root, expected)
+        return _report_drift(targets, out_root, expected)
 
 
 def _report_drift(

@@ -321,3 +321,19 @@ def test_main_rejects_malformed_flags_before_compiling(cli_case, monkeypatch, tm
     assert error.value.code == 2
     assert "invalid --cxxflags" in capsys.readouterr().err
     assert not (tmp_path / "compiler-argv.json").exists()
+
+
+@pytest.mark.parametrize("outcome", ["match", "drift", "failure", "skip"])
+def test_main_cleans_check_output(cli_case, monkeypatch, tmp_path, outcome):
+    if outcome == "drift":
+        cli_case.write_text(PINNED)
+    elif outcome == "failure":
+        install_fake_compiler(monkeypatch, tmp_path, "fail")
+    elif outcome == "skip":
+        monkeypatch.setattr(
+            regen,
+            "load_cases",
+            lambda: [{"id": "k", "kernel": "kernel", "headers": ["rocwmma/rocwmma.hpp"]}],
+        )
+    assert regen.main() == {"match": 0, "drift": 1, "failure": 2, "skip": 2}[outcome]
+    assert not list(tmp_path.glob("race-asm-*"))
