@@ -581,7 +581,7 @@ tensor_load_zero_fill_kernel(TensorDesc desc, int *dst) {
   else if (wave == 1)
     yieldToOtherWaves();
   if (wave == 1)
-    dst[lane()] = ldsRead(lane() * 4);
+    dst[lane()] = ldsRead((kTensorHalf + lane() % kTensorHalf) * 4);
   if (wave == 0)
     waitTensorcnt<0>();
 }
@@ -594,9 +594,7 @@ TEST_F(Gfx1250RaceTest, tensor_load_zero_fill) {
   RACE_HIP_CHECK(hipGetLastError());
   sync();
   ExpectNoRace();
-  std::vector<int> expected = range(0, kTensorHalf);
-  expected.resize(kElements, 0);
-  ExpectValues(dst, expected);
+  ExpectValues(dst, std::vector<int>(kWave, 0));
 }
 
 TEST_F(Gfx1250RaceTest, tensor_load_zero_fill_cross_wave_race) {
