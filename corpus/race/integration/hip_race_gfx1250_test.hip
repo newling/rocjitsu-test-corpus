@@ -444,6 +444,22 @@ TEST_F(Gfx1250RaceTest, tensor_store_missing_dscnt_race) {
   ExpectRace(kDsWriteThenTensorStoreRace);
 }
 
+__global__ void tensor_load_then_store_same_wave_kernel(TensorDesc load, TensorDesc store) {
+  tensorLoad(load);
+  tensorStore(store);
+  waitTensorcnt<0>();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_then_store_same_wave) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_load_then_store_same_wave_kernel<<<1, kWave, kTileBytes>>>(
+      describe({.global = src}), describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(0));
+}
+
 // --- Same-wave tensor transfers stay in issue order ---
 
 // A load may overwrite the LDS tile an earlier store from the same wave is
