@@ -506,6 +506,47 @@ TEST_F(Gfx1250RaceTest, tensor_store_then_load_same_wave) {
   ExpectValues(dst, range(0));
 }
 
+template <bool ReadNewer>
+__global__ void tensor_mixed_partial_wait_kernel(TensorDesc store, TensorDesc load, int *dst) {
+  ldsFill(0, 100 + lane());
+  tensorStore(store);
+  tensorLoad(load);
+  waitTensorcnt<1>();
+  if constexpr (ReadNewer) {
+    // The load can still be pending even though the older store is complete.
+    dst[lane()] = ldsRead(kTileBytes + lane() * 4);
+  } else {
+    // Only the completed store read this tile; the younger load uses another.
+    ldsFill(0, 200 + lane());
+  }
+  waitTensorcnt<0>();
+  if constexpr (!ReadNewer)
+    dst[lane()] = ldsRead(kTileBytes + lane() * 4);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_mixed_partial_wait_oldest_store) {
+  auto *stored = alloc<int>(kElements), *src = allocWithData<int>(kElements);
+  auto *dst = alloc<int>(kElements);
+  tensor_mixed_partial_wait_kernel<false><<<1, kWave, 2 * kTileBytes>>>(
+      describe({.global = stored}), describe({.global = src, .lds_offset = kTileBytes}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(100));
+  ExpectValues(dst, range(0));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_mixed_partial_wait_newest_load_race) {
+  auto *stored = alloc<int>(kElements), *src = allocWithData<int>(kElements);
+  auto *dst = alloc<int>(kElements);
+  tensor_mixed_partial_wait_kernel<true><<<1, kWave, 2 * kTileBytes>>>(
+      describe({.global = stored}), describe({.global = src, .lds_offset = kTileBytes}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorLoadThenReadRace);
+  ExpectValues(stored, range(100));
+}
+
 // --- Tensor instructions that move no data still count on TENSORCNT ---
 
 // A real load, then an instruction that moves nothing, then a wait that lets
