@@ -723,6 +723,104 @@ TEST_F(Gfx1250RaceTest, tensor_load_zero_fill_cross_wave_race) {
   ExpectRace(kTensorLoadThenReadRace);
 }
 
+// --- Tensor completion through an LDS barrier cell ---
+
+constexpr uint32_t kBarrierCellOffset = kTileBytes;
+enum class TensorCellSync { Phase, Workgroup, None };
+
+TensorDesc describeWithBarrier(const void *global) {
+  auto desc = describe({.global = global});
+  desc.group1[0] |= 1u << 18;
+  desc.group1[1] |= kBarrierCellOffset >> 3;
+  return desc;
+}
+
+template <TensorCellSync S>
+__global__ __attribute__((amdgpu_flat_work_group_size(2 * kWave, 2 * kWave))) void
+tensor_load_lds_barrier_kernel(TensorDesc desc, int *dst) {
+  const int wave = waveIndex();
+  if (wave == 0) {
+    ldsFill(0, kSentinel);
+    if (lane() == 0) {
+      // A WIDTH=29 barrier expecting one arrival starts with both words zero.
+      ldsWrite(kBarrierCellOffset, 0);
+      ldsWrite(kBarrierCellOffset + 4, 0);
+    }
+    waitDscnt();
+  }
+  barrier();
+
+  if (wave == 0) {
+    tensorLoad(desc);
+    if (S == TensorCellSync::Workgroup)
+      waitTensorcnt<0>();
+  }
+  if (S == TensorCellSync::Workgroup)
+    barrier();
+
+  if (wave == 1) {
+    bool ready = true;
+    if (S == TensorCellSync::Phase) {
+      ready = false;
+      // One arrival flips the phase parity bit. Keep the probe bounded if
+      // execution stops signaling arrivals; the sentinel then fails the test.
+      for (int attempt = 0; attempt < 128; ++attempt) {
+        if (ldsRead(kBarrierCellOffset) & (1u << 29)) {
+          ready = true;
+          break;
+        }
+        yieldToOtherWaves();
+      }
+    } else if (S == TensorCellSync::None) {
+      yieldToOtherWaves();
+    }
+    dst[lane()] = ready ? ldsRead(lane() * 4) : kSentinel;
+  }
+  if (wave == 0)
+    waitTensorcnt<0>();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_lds_barrier_phase_known_false_positive) {
+  auto *src = allocWithData<int>(kElements);
+  auto *dst = allocFilled(kWave, kSentinel);
+  tensor_load_lds_barrier_kernel<TensorCellSync::Phase>
+      <<<1, 2 * kWave, kTileBytes + 8>>>(describeWithBarrier(src), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectValues(dst, range(0));
+  // TODO: Use ExpectNoRace() once the detector understands LDS-barrier phase
+  // synchronization. Require exactly this false positive for now, so a fix or
+  // an unrelated report cannot silently satisfy the known-gap expectation.
+  ExpectRace({.kernel = "tensor_load_lds_barrier_kernel",
+              .type = "LDS",
+              .access = "read",
+              .wave = 1,
+              .lane = 0,
+              .producer = "tensor_load_to_lds",
+              .consumer = "ds_load_b32"});
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_lds_barrier_workgroup_control) {
+  auto *src = allocWithData<int>(kElements);
+  auto *dst = allocFilled(kWave, kSentinel);
+  tensor_load_lds_barrier_kernel<TensorCellSync::Workgroup>
+      <<<1, 2 * kWave, kTileBytes + 8>>>(describeWithBarrier(src), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectValues(dst, range(0));
+  ExpectNoRace();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_lds_barrier_unwaited_race) {
+  auto *src = allocWithData<int>(kElements);
+  auto *dst = alloc<int>(kWave);
+  tensor_load_lds_barrier_kernel<TensorCellSync::None>
+      <<<1, 2 * kWave, kTileBytes + 8>>>(describeWithBarrier(src), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorLoadThenReadRace);
+}
+
 // --- LDS padding is not written ---
 
 // 16 dwords of data, then 4 dwords of padding, then the other 16.
