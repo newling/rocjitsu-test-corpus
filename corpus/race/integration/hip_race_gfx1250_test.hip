@@ -806,6 +806,75 @@ TEST_F(Gfx1250RaceTest, tensor_store_outside_tensor_counts) {
   ExpectValues(untouched, std::vector<int>(kElements, kSentinel));
 }
 
+// --- Tensor-to-tensor communication between waves ---
+
+template <bool WaitForTensor, bool UseBarrier, bool DelayProducer>
+__global__ __attribute__((amdgpu_flat_work_group_size(2 * kWave, 2 * kWave))) void
+tensor_cross_wave_copy_kernel(TensorDesc load, TensorDesc store) {
+  const int wave = waveIndex();
+  if (wave == (DelayProducer ? 0 : 1))
+    yieldToOtherWaves();
+  if (wave == 0) {
+    tensorLoad(load);
+    if constexpr (WaitForTensor)
+      waitTensorcnt<0>();
+  }
+  if constexpr (UseBarrier)
+    barrier();
+  if (wave == 1) {
+    tensorStore(store);
+    waitTensorcnt<0>();
+  }
+  if (wave == 0)
+    waitTensorcnt<0>();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_cross_wave_copy_producer_delayed) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_cross_wave_copy_kernel<true, true, true><<<1, 2 * kWave, kTileBytes>>>(
+      describe({.global = src}), describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(0));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_cross_wave_copy_consumer_delayed) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_cross_wave_copy_kernel<true, true, false><<<1, 2 * kWave, kTileBytes>>>(
+      describe({.global = src}), describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(0));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_cross_wave_copy_missing_tensorcnt_race) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_cross_wave_copy_kernel<false, true, false><<<1, 2 * kWave, kTileBytes>>>(
+      describe({.global = src}), describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace({.findings = FindingCount::OneOrMore,
+              .type = "LDS",
+              .access = "read",
+              .producer = "tensor_load_to_lds",
+              .consumer = "tensor_store_from_lds"});
+}
+
+TEST_F(Gfx1250RaceTest, tensor_cross_wave_copy_missing_barrier_race) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_cross_wave_copy_kernel<true, false, false><<<1, 2 * kWave, kTileBytes>>>(
+      describe({.global = src}), describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace({.findings = FindingCount::OneOrMore,
+              .type = "LDS",
+              .access = "read",
+              .producer = "tensor_load_to_lds",
+              .consumer = "tensor_store_from_lds"});
+}
+
 // --- Elements outside the tensor are zero-filled in LDS ---
 
 constexpr uint32_t kTensorHalf = kElements / 2;
