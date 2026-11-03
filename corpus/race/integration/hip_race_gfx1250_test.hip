@@ -321,6 +321,46 @@ TEST_F(Gfx1250RaceTest, vgpr_loadcnt_race) {
               .consumer = "global_store_b32"});
 }
 
+// --- Tensor loads and DS writes do not share completion ordering ---
+
+template <bool WaitForTensor>
+__global__ void tensor_load_then_ds_write_kernel(TensorDesc load, int *dst) {
+  tensorLoad(load);
+  if constexpr (WaitForTensor)
+    waitTensorcnt<0>();
+  ldsWrite(lane() * 4, 100 + lane());
+  waitDscnt();
+  waitTensorcnt<0>();
+  dst[lane()] = ldsRead(lane() * 4);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_then_ds_write) {
+  auto *src = allocWithData<int>(kElements), *dst = alloc<int>(kElements);
+  tensor_load_then_ds_write_kernel<true><<<1, kWave, kTileBytes>>>(describe({.global = src}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(dst, range(100));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_then_ds_write_known_false_negative) {
+  auto *src = allocWithData<int>(kElements), *dst = alloc<int>(kElements);
+  tensor_load_then_ds_write_kernel<false><<<1, kWave, kTileBytes>>>(describe({.global = src}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  const RaceExpectation required{.findings = FindingCount::OneOrMore,
+                                 .type = "LDS",
+                                 .access = "write",
+                                 .producer = "tensor_load_to_lds",
+                                 .consumer = "ds_store_b32"};
+  // TODO: Use ExpectRace(required) once LDS WAW detection is implemented.
+  // Draining after both writes does not order them. Their winner is unspecified.
+  const auto parsed = rocjitsu::test::parseRaceLogFromEnvironment();
+  ASSERT_TRUE(parsed.ok()) << parsed.error;
+  EXPECT_EQ(rocjitsu::test::matchRaceExpectation(parsed.records, required).message(),
+            "expected at least one race, got none");
+}
+
 // --- The issuing wave must wait for TENSORCNT, and only TENSORCNT ---
 
 enum class Wait { Tensorcnt, None, OtherCounters };

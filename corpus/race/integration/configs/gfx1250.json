@@ -3,6 +3,8 @@
   "target": "gfx1250",
   "cases": [
     "vgpr_loadcnt",
+    "tensor_load_then_ds_write",
+    "tensor_load_then_ds_write_known_false_negative",
     "vgpr_loadcnt_race",
     "split_barrier_producer_delayed",
     "split_barrier_consumer_delayed",
