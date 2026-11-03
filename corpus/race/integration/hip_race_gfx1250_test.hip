@@ -820,6 +820,49 @@ TEST_F(Gfx1250RaceTest, tensor_store_past_lds_allocation) {
   EXPECT_EQ(stored, range(100, kElements / 2));
 }
 
+template <bool WaitForTensor>
+__global__ void tensor_load_then_async_store_kernel(TensorDesc load, int *stored) {
+  tensorLoad(load);
+  if constexpr (WaitForTensor)
+    waitTensorcnt<0>();
+  asm volatile("global_store_async_from_lds_b32 %[offset], %[lds], %[base]\n"
+               "s_wait_asynccnt 0\n"
+               :
+               : [offset] "v"(lane() * 4), [lds] "v"(lane() * 4), [base] "s"(stored)
+               : "memory");
+  waitTensorcnt<0>();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_then_async_store) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_load_then_async_store_kernel<true><<<1, kWave, kTileBytes>>>(
+      describe({.global = src}), stored);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(0));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_then_async_store_known_false_negative) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  tensor_load_then_async_store_kernel<false><<<1, kWave, kTileBytes>>>(
+      describe({.global = src}), stored);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  const RaceExpectation required{.findings = FindingCount::OneOrMore,
+                                 .type = "LDS",
+                                 .access = "read",
+                                 .producer = "tensor_load_to_lds",
+                                 .consumer = "global_store_async_from_lds_b32"};
+  // TODO: Check ExpectRace(required) once ordinary async stores expose their
+  // LDS reads. Until then, require this exact matcher failure; an unexpected
+  // pass or a different diagnostic must fail this known-gap test.
+  const auto parsed = rocjitsu::test::parseRaceLogFromEnvironment();
+  ASSERT_TRUE(parsed.ok()) << parsed.error;
+  EXPECT_EQ(rocjitsu::test::matchRaceExpectation(parsed.records, required).message(),
+            "expected at least one race, got none");
+}
+
 // --- Compiler-generated tensor load ---
 
 // The builtin issues the load; the compiler emits no s_wait_tensorcnt for it,

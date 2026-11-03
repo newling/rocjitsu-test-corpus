@@ -33,6 +33,8 @@
     "tensor_load_padding_data_race",
     "tensor_load_past_lds_allocation",
     "tensor_store_past_lds_allocation",
+    "tensor_load_then_async_store",
+    "tensor_load_then_async_store_known_false_negative",
     "tensor_load_builtin"
   ]
 }
