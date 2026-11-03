@@ -190,6 +190,98 @@ static constexpr RaceExpectation kDsWriteThenTensorStoreRace{
     .consumer = "tensor_store_from_lds",
 };
 
+// --- Ordinary memory with split workgroup barriers ---
+
+template <bool DelayProducer, bool WaitForDs, bool UseBarrier, int Rounds>
+__global__ __attribute__((amdgpu_flat_work_group_size(2 * kWave, 2 * kWave))) void
+split_barrier_memory_kernel(const int *src, int *dst) {
+  const int wave = waveIndex();
+  for (int round = 0; round < Rounds; ++round) {
+    if (wave == 0) {
+      int value;
+      asm volatile("global_load_b32 %0, %1, off\n"
+                   "s_wait_loadcnt 0"
+                   : "=v"(value) : "v"(src + lane()) : "memory");
+      ldsWrite(lane() * 4, value + 100 * round);
+      if constexpr (WaitForDs)
+        waitDscnt();
+    }
+    // Exercise both arrival schedules in the emulator. This is a scheduling
+    // perturbation, not a hardware guarantee about which wave arrives first.
+    if (wave == (DelayProducer ? 0 : 1))
+      yieldToOtherWaves();
+    if constexpr (UseBarrier)
+      asm volatile("s_barrier_signal -1" ::: "memory");
+    int work;
+    asm volatile("v_add_nc_u32 %0, %1, 7" : "=v"(work) : "v"(lane()));
+    if constexpr (UseBarrier)
+      asm volatile("s_barrier_wait -1" ::: "memory");
+    if (wave == 1)
+      dst[round * kElements + lane()] = ldsRead(lane() * 4) + work;
+    if constexpr (UseBarrier) {
+      // Finish the consumer's read before the producer reuses LDS next round.
+      barrier();
+    }
+  }
+  waitDscnt();
+}
+
+TEST_F(Gfx1250RaceTest, split_barrier_producer_delayed) {
+  auto *src = allocWithData<int>(kElements), *dst = alloc<int>(3 * kElements);
+  split_barrier_memory_kernel<true, true, true, 3>
+      <<<1, 2 * kWave, kTileBytes>>>(src, dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  std::vector<int> expected(3 * kElements);
+  for (int round = 0; round < 3; ++round)
+    for (int index = 0; index < kElements; ++index)
+      expected[round * kElements + index] = 100 * round + 2 * index + 7;
+  ExpectValues(dst, expected);
+}
+
+TEST_F(Gfx1250RaceTest, split_barrier_consumer_delayed) {
+  auto *src = allocWithData<int>(kElements), *dst = alloc<int>(3 * kElements);
+  split_barrier_memory_kernel<false, true, true, 3>
+      <<<1, 2 * kWave, kTileBytes>>>(src, dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  std::vector<int> expected(3 * kElements);
+  for (int round = 0; round < 3; ++round)
+    for (int index = 0; index < kElements; ++index)
+      expected[round * kElements + index] = 100 * round + 2 * index + 7;
+  ExpectValues(dst, expected);
+}
+
+TEST_F(Gfx1250RaceTest, split_barrier_missing_dscnt_race) {
+  auto *src = allocWithData<int>(kElements), *dst = alloc<int>(1 * kElements);
+  split_barrier_memory_kernel<false, false, true, 1>
+      <<<1, 2 * kWave, kTileBytes>>>(src, dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace({.findings = FindingCount::OneOrMore,
+              .kernel = "split_barrier_memory_kernel",
+              .type = "LDS",
+              .access = "read",
+              .producer = "ds_store_b32",
+              .consumer = "ds_load_b32"});
+}
+
+TEST_F(Gfx1250RaceTest, split_barrier_missing_rendezvous_race) {
+  auto *src = allocWithData<int>(kElements), *dst = alloc<int>(1 * kElements);
+  split_barrier_memory_kernel<false, true, false, 1>
+      <<<1, 2 * kWave, kTileBytes>>>(src, dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace({.findings = FindingCount::OneOrMore,
+              .kernel = "split_barrier_memory_kernel",
+              .type = "LDS",
+              .access = "read",
+              .producer = "ds_store_b32",
+              .consumer = "ds_load_b32"});
+}
+
 // --- GFX12 split wait counters ---
 
 template <bool Wait> __global__ void vgpr_loadcnt_kernel(const int *src, int *dst) {

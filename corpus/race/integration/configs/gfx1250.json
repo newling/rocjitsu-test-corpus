@@ -4,6 +4,10 @@
   "cases": [
     "vgpr_loadcnt",
     "vgpr_loadcnt_race",
+    "split_barrier_producer_delayed",
+    "split_barrier_consumer_delayed",
+    "split_barrier_missing_dscnt_race",
+    "split_barrier_missing_rendezvous_race",
     "tensor_load_tensorcnt",
     "tensor_load_missing_tensorcnt_race",
     "tensor_load_other_counters_race",
