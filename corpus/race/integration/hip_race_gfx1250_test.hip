@@ -395,6 +395,45 @@ TEST_F(Gfx1250RaceTest, tensor_load_pipeline_newest_race) {
   ExpectRace(kTensorLoadThenReadRace);
 }
 
+template <bool WaitForAsync>
+__global__ void async_load_then_tensor_store_kernel(const int *src, TensorDesc store) {
+  asm volatile("global_load_async_to_lds_b32 %[lds], %[offset], %[base]\n"
+               :
+               : [lds] "v"(lane() * 4), [offset] "v"(lane() * 4), [base] "s"(src)
+               : "memory");
+  if constexpr (WaitForAsync)
+    asm volatile("s_wait_asynccnt 0" ::: "memory");
+  else
+    // Waiting for tensor DMA must not complete an ordinary async LDS load.
+    waitTensorcnt<0>();
+  tensorStore(store);
+  waitTensorcnt<0>();
+  asm volatile("s_wait_asynccnt 0" ::: "memory");
+}
+
+TEST_F(Gfx1250RaceTest, async_load_then_tensor_store) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  async_load_then_tensor_store_kernel<true><<<1, kWave, kTileBytes>>>(
+      src, describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(0));
+}
+
+TEST_F(Gfx1250RaceTest, async_load_then_tensor_store_wrong_wait_race) {
+  auto *src = allocWithData<int>(kElements), *stored = alloc<int>(kElements);
+  async_load_then_tensor_store_kernel<false><<<1, kWave, kTileBytes>>>(
+      src, describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace({.findings = FindingCount::OneOrMore,
+              .type = "LDS",
+              .access = "read",
+              .producer = "global_load_async_to_lds_b32",
+              .consumer = "tensor_store_from_lds"});
+}
+
 // --- A tensor store's LDS source ---
 
 // Wave 0 stores the tile; wave 1 then overwrites it in LDS.
