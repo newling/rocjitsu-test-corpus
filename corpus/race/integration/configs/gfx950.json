@@ -47,6 +47,8 @@
     "lds_same_wave_order",
     "global_to_lds_buffer",
     "global_to_lds_buffer_race",
+    "global_to_lds_buffer_then_ds_write",
+    "global_to_lds_buffer_then_ds_write_known_false_negative",
     "partial_vmcnt_race",
     "multiple_race",
     "multi_kernel",

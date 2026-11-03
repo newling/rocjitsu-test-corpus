@@ -981,6 +981,79 @@ TEST_F(Gfx950RaceTest, global_to_lds_buffer_race) {
   ExpectRace(kGlobalToLdsBufferRaceExpectation);
 }
 
+// --- Direct-to-LDS versus DS write ordering ---
+
+template <bool WaitBeforeDs>
+__global__ void buffer_load_lds_then_ds_write_kernel(const int *src, int *out) {
+  const unsigned lane = threadIdx.x;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(src);
+  int value;
+  unsigned saved_m0;
+  asm volatile(
+      "s_mov_b32 %[saved_m0], m0\n"
+      "s_mov_b32 s12, %[base_lo]\n"
+      "s_mov_b32 s13, %[base_hi]\n"
+      "s_mov_b32 s14, 256\n"
+      "s_mov_b32 s15, %[format]\n"
+      "s_mov_b32 m0, 0\n"
+      "s_waitcnt vmcnt(0) lgkmcnt(0)\n"
+      "buffer_load_dword %[offset], s[12:15], 0 offen lds\n"
+      ".if %c[wait_before_ds]\n"
+      "s_waitcnt vmcnt(0)\n"
+      ".endif\n"
+      "ds_write_b32 %[offset], %[replacement]\n"
+      // This drain makes the read safe, but does not order the two writes.
+      "s_waitcnt vmcnt(0) lgkmcnt(0)\n"
+      "ds_read_b32 %[value], %[offset]\n"
+      "s_waitcnt lgkmcnt(0)\n"
+      "s_mov_b32 m0, %[saved_m0]\n"
+      : [value] "=&v"(value), [saved_m0] "=&s"(saved_m0)
+      : [base_lo] "s"(static_cast<unsigned>(base)),
+        [base_hi] "s"(static_cast<unsigned>(base >> 32) & 0xffffu),
+        [format] "s"(4u | (7u << 12) | (4u << 15)), [offset] "v"(lane * 4),
+        [replacement] "v"(static_cast<int>(lane) + 1000),
+        [wait_before_ds] "n"(WaitBeforeDs)
+      : "s12", "s13", "s14", "s15", "memory");
+  out[lane] = value;
+}
+
+TEST_F(Gfx950RaceTest, global_to_lds_buffer_then_ds_write) {
+  auto *src = allocWithData<int>(64), *out = alloc<int>(64);
+  buffer_load_lds_then_ds_write_kernel<true><<<1, 64, 256>>>(src, out);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  std::vector<int> host(64);
+  RACE_HIP_CHECK(hipMemcpy(host.data(), out, 256, hipMemcpyDeviceToHost));
+  for (int lane = 0; lane < 64; ++lane)
+    EXPECT_EQ(host[lane], lane + 1000);
+  ExpectNoRace();
+  RACE_HIP_CHECK(hipFree(src));
+  RACE_HIP_CHECK(hipFree(out));
+}
+
+TEST_F(Gfx950RaceTest, global_to_lds_buffer_then_ds_write_known_false_negative) {
+  auto *src = allocWithData<int>(64), *out = alloc<int>(64);
+  buffer_load_lds_then_ds_write_kernel<false><<<1, 64, 256>>>(src, out);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  const RaceExpectation required{.findings = FindingCount::OneOrMore,
+                                 .kernel = "buffer_load_lds_then_ds_write_kernel",
+                                 .type = "LDS",
+                                 .access = "write",
+                                 .wave = 0,
+                                 .lane = 0,
+                                 .producer = "buffer_load_dword",
+                                 .consumer = "ds_write_b32"};
+  // TODO: Use ExpectRace(required) once LDS WAW detection is implemented.
+  // The final drain does not order the writes; do not assert a winning value.
+  const auto parsed = rocjitsu::test::parseRaceLogFromEnvironment();
+  ASSERT_TRUE(parsed.ok()) << parsed.error;
+  EXPECT_EQ(rocjitsu::test::matchRaceExpectation(parsed.records, required).message(),
+            "expected at least one race, got none");
+  RACE_HIP_CHECK(hipFree(src));
+  RACE_HIP_CHECK(hipFree(out));
+}
+
 // --- Partial vmcnt ---
 
 static constexpr RaceExpectation kPartialVmcntRaceExpectation{
