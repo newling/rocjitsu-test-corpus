@@ -332,6 +332,26 @@ TEST_F(Gfx1250RaceTest, tensor_load_cross_wave_no_tensorcnt_race) {
   ExpectRace(kTensorLoadThenReadRace);
 }
 
+__global__ void tensor_two_loads_same_destination_kernel(TensorDesc older, TensorDesc newer,
+                                                         int *dst) {
+  tensorLoad(older);
+  tensorLoad(newer);
+  waitTensorcnt<0>();
+  dst[lane()] = ldsRead(lane() * 4);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_two_loads_same_destination) {
+  auto *older = allocFilled(kElements, kSentinel), *newer = allocWithData<int>(kElements);
+  auto *dst = alloc<int>(kElements);
+  tensor_two_loads_same_destination_kernel<<<1, kWave, kTileBytes>>>(
+      describe({.global = older}), describe({.global = newer}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  // WAW detection is absent: checking the final data is essential here.
+  ExpectValues(dst, range(0));
+}
+
 // --- Double-buffered pipeline ---
 
 // Wave 0 loads two tiles, waits for all but the newest, and the workgroup
