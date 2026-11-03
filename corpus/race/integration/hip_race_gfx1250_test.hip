@@ -276,6 +276,47 @@ TEST_F(Gfx1250RaceTest, tensor_load_other_counters_race) {
   ExpectRace(kTensorLoadThenReadRace);
 }
 
+// --- A store must omit the holes between partially in-bounds tile rows ---
+
+TensorDesc describeStoreWithHoles(void *global) {
+  auto desc = describe({.global = global, .tensor_elements = 16, .tile_elements = 32});
+  desc.group1[2] = 2u << 16; // tensor_dim1 = 2.
+  desc.group1[4] = 2;        // tile_dim1 = 2.
+  desc.group1[5] = 16;       // Contiguous 16-element global rows.
+  return desc;
+}
+
+template <bool WriteHole>
+__global__ void tensor_store_holes_kernel(TensorDesc store) {
+  ldsFill(0, 100 + lane());
+  ldsFill(kTileBytes, 200 + lane());
+  tensorStore(store);
+  if (lane() < 16)
+    ldsWrite((WriteHole ? 64 : 0) + lane() * 4, 300 + lane());
+  waitDscnt();
+  waitTensorcnt<0>();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_holes) {
+  auto *stored = alloc<int>(kElements);
+  tensor_store_holes_kernel<true><<<1, kWave, 2 * kTileBytes>>>(describeStoreWithHoles(stored));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  auto expected = range(100, 16);
+  const auto second = range(200, 16);
+  expected.insert(expected.end(), second.begin(), second.end());
+  ExpectValues(stored, expected);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_holes_adjacent_data_race) {
+  auto *stored = alloc<int>(kElements);
+  tensor_store_holes_kernel<false><<<1, kWave, 2 * kTileBytes>>>(describeStoreWithHoles(stored));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorStoreThenWriteRace);
+}
+
 // --- Other waves need the issuing wave's wait and a barrier ---
 
 enum class Sync { WaitAndBarrier, WaitOnly, BarrierOnly };
