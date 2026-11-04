@@ -957,6 +957,73 @@ TEST_F(Gfx1250RaceTest, tensor_load_padding_data_race) {
   ExpectRace(kTensorLoadThenReadRace);
 }
 
+// Three padded loads fill interleaved four-dword stripes. A wave may read its
+// own completed stripes before peers publish their completion through a barrier.
+template <bool ReadPeer>
+__global__ __attribute__((amdgpu_flat_work_group_size(3 * kWave, 3 * kWave))) void
+tensor_load_interleaved_kernel(TensorDesc first, TensorDesc second, TensorDesc third,
+                                int *probes, int *assembled) {
+  const int wave = waveIndex();
+  if (wave == 0)
+    tensorLoad(first);
+  else if (wave == 1)
+    tensorLoad(second);
+  else
+    tensorLoad(third);
+  // All three write events must exist before any wave probes a stripe.
+  barrier();
+  waitTensorcnt<0>();
+  if (lane() < 12) {
+    const int owner = ReadPeer ? (wave + 1) % 3 : wave;
+    const uint32_t offset = owner * 16 + (lane() / 4) * 48 + (lane() % 4) * 4;
+    probes[wave * 12 + lane()] = ldsReadAndWait(offset);
+  }
+  barrier();
+  if (threadIdx.x < 36)
+    assembled[threadIdx.x] = ldsReadAndWait(threadIdx.x * 4);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_interleaved_own_stripes) {
+  auto *first = allocWithData<int>(36);
+  auto *second = first + 12;
+  auto *third = first + 24;
+  auto *probes = alloc<int>(36);
+  auto *assembled = alloc<int>(36);
+  tensor_load_interleaved_kernel<false><<<1, 3 * kWave, 144>>>(
+      describe({.global = first, .tensor_elements = 12, .tile_elements = 12,
+                .pad = true, .pad_interval = 1, .pad_amount = 7}),
+      describe({.global = second, .lds_offset = 16, .tensor_elements = 12, .tile_elements = 12,
+                .pad = true, .pad_interval = 1, .pad_amount = 7}),
+      describe({.global = third, .lds_offset = 32, .tensor_elements = 12, .tile_elements = 12,
+                .pad = true, .pad_interval = 1, .pad_amount = 7}), probes, assembled);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  std::vector<int> expected_assembled;
+  for (int stripe = 0; stripe < 3; ++stripe)
+    for (int wave = 0; wave < 3; ++wave)
+      for (int element = 0; element < 4; ++element)
+        expected_assembled.push_back(wave * 12 + stripe * 4 + element);
+  ExpectValues(probes, range(0, 36));
+  ExpectValues(assembled, expected_assembled);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_load_interleaved_peer_stripes_race) {
+  auto *src = allocWithData<int>(12);
+  auto *probes = alloc<int>(36);
+  auto *assembled = alloc<int>(36);
+  tensor_load_interleaved_kernel<true><<<1, 3 * kWave, 144>>>(
+      describe({.global = src, .tensor_elements = 12, .tile_elements = 12,
+                .pad = true, .pad_interval = 1, .pad_amount = 7}),
+      describe({.global = src, .lds_offset = 16, .tensor_elements = 12, .tile_elements = 12,
+                .pad = true, .pad_interval = 1, .pad_amount = 7}),
+      describe({.global = src, .lds_offset = 32, .tensor_elements = 12, .tile_elements = 12,
+                .pad = true, .pad_interval = 1, .pad_amount = 7}), probes, assembled);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorLoadThenReadRace);
+}
+
 // --- LDS addresses past the workgroup's allocation ---
 
 // A 2048-byte allocation, one LDS block, with the tile's second half past it.
