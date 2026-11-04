@@ -7,6 +7,8 @@
     "tensor_load_tensorcnt",
     "tensor_load_missing_tensorcnt_race",
     "tensor_load_other_counters_race",
+    "tensor_store_holes",
+    "tensor_store_holes_adjacent_data_race",
     "tensor_load_cross_wave",
     "tensor_load_cross_wave_no_barrier_race",
     "tensor_load_cross_wave_no_tensorcnt_race",
