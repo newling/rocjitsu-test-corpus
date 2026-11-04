@@ -134,7 +134,7 @@ __device__ inline void barrier() {
 
 /// Read an int from LDS and wait for it, so a case reports only the LDS race
 /// it is about and never a race on the destination register.
-__device__ inline int ldsRead(uint32_t byte_offset) {
+__device__ inline int ldsReadAndWait(uint32_t byte_offset) {
   int value;
   asm volatile("ds_load_b32 %0, %1\n"
                "s_wait_dscnt 0"
@@ -144,12 +144,13 @@ __device__ inline int ldsRead(uint32_t byte_offset) {
   return value;
 }
 
+/// Issue an LDS write without waiting for it to complete.
 __device__ inline void ldsWrite(uint32_t byte_offset, int value) {
   asm volatile("ds_store_b32 %0, %1" ::"v"(byte_offset), "v"(value) : "memory");
 }
 
 /// Fill one tile of LDS with `value` and wait for the writes.
-__device__ inline void ldsFill(uint32_t byte_offset, int value) {
+__device__ inline void ldsFillAndWait(uint32_t byte_offset, int value) {
   ldsWrite(byte_offset + lane() * 4, value);
   waitDscnt();
 }
@@ -244,7 +245,7 @@ template <Wait W> __global__ void tensor_load_same_wave_kernel(TensorDesc desc, 
   if (W == Wait::OtherCounters)
     asm volatile("s_wait_loadcnt 0\n"
                  "s_wait_dscnt 0" ::: "memory");
-  dst[threadIdx.x] = ldsRead(threadIdx.x * 4);
+  dst[threadIdx.x] = ldsReadAndWait(threadIdx.x * 4);
   waitTensorcnt<0>();
 }
 
@@ -297,7 +298,7 @@ tensor_load_cross_wave_kernel(TensorDesc desc, int *dst) {
   if (S != Sync::WaitOnly)
     barrier();
   if (wave == 1)
-    dst[lane()] = ldsRead(lane() * 4);
+    dst[lane()] = ldsReadAndWait(lane() * 4);
   if (wave == 0)
     waitTensorcnt<0>();
 }
@@ -363,7 +364,7 @@ tensor_load_pipeline_kernel(TensorDesc older, TensorDesc newer, int *dst) {
   }
   barrier();
   if (wave == 1)
-    dst[lane()] = ldsRead(ReadOffset + lane() * 4);
+    dst[lane()] = ldsReadAndWait(ReadOffset + lane() * 4);
   if (wave == 0)
     waitTensorcnt<0>();
 }
@@ -401,14 +402,14 @@ __global__ __attribute__((amdgpu_flat_work_group_size(2 * kWave, 2 * kWave))) vo
 tensor_store_source_overwrite_kernel(TensorDesc desc) {
   const int wave = waveIndex();
   if (wave == 0) {
-    ldsFill(0, 100 + lane());
+    ldsFillAndWait(0, 100 + lane());
     tensorStore(desc);
     if (Synchronized)
       waitTensorcnt<0>();
   }
   barrier();
   if (wave == 1)
-    ldsFill(0, -1);
+    ldsFillAndWait(0, -1);
   if (wave == 0)
     waitTensorcnt<0>();
 }
@@ -473,13 +474,13 @@ TEST_F(Gfx1250RaceTest, tensor_store_missing_dscnt_race) {
 template <bool WaitTensorcnt>
 __global__ void tensor_store_then_load_same_wave_kernel(TensorDesc store, TensorDesc load,
                                                         int *dst) {
-  ldsFill(0, 100 + lane());
+  ldsFillAndWait(0, 100 + lane());
   tensorStore(store);
   if (WaitTensorcnt)
     waitTensorcnt<0>();
   tensorLoad(load);
   waitTensorcnt<0>();
-  dst[lane()] = ldsRead(lane() * 4);
+  dst[lane()] = ldsReadAndWait(lane() * 4);
 }
 
 TEST_F(Gfx1250RaceTest, tensor_store_then_load_same_wave) {
@@ -548,12 +549,12 @@ TEST_F(Gfx1250RaceTest, tensor_load_then_store_same_wave_race) {
 template <int WaitCount>
 __global__ void tensor_load_then_empty_kernel(TensorDesc real, TensorDesc empty, int *loaded,
                                               int *untouched) {
-  ldsFill(kTileBytes, kUnwrittenValue);
+  ldsFillAndWait(kTileBytes, kUnwrittenValue);
   tensorLoad(real);
   tensorLoad(empty);
   waitTensorcnt<WaitCount>();
-  loaded[lane()] = ldsRead(lane() * 4);
-  untouched[lane()] = ldsRead(kTileBytes + lane() * 4);
+  loaded[lane()] = ldsReadAndWait(lane() * 4);
+  untouched[lane()] = ldsReadAndWait(kTileBytes + lane() * 4);
   waitTensorcnt<0>();
 }
 
@@ -612,8 +613,8 @@ __global__ void tensor_load_then_empty_store_kernel(TensorDesc real, TensorDesc 
   tensorLoad(real);
   tensorStore(empty);
   waitTensorcnt<1>();
-  loaded[lane()] = ldsRead(lane() * 4);
-  ldsFill(kTileBytes, 100 + lane());
+  loaded[lane()] = ldsReadAndWait(lane() * 4);
+  ldsFillAndWait(kTileBytes, 100 + lane());
   waitTensorcnt<0>();
 }
 
@@ -635,8 +636,8 @@ TEST_F(Gfx1250RaceTest, tensor_store_outside_tensor_counts) {
 // retires the real store; waiting for two may leave it reading its LDS source.
 template <int WaitCount>
 __global__ void tensor_store_between_empty_stores_kernel(TensorDesc empty, TensorDesc real) {
-  ldsFill(0, 100 + lane());
-  ldsFill(kTileBytes, 200 + lane());
+  ldsFillAndWait(0, 100 + lane());
+  ldsFillAndWait(kTileBytes, 200 + lane());
   tensorStore(empty);
   tensorStore(real);
   tensorStore(empty);
@@ -687,7 +688,7 @@ __global__ __attribute__((amdgpu_flat_work_group_size(2 * kWave, 2 * kWave))) vo
 tensor_load_zero_fill_kernel(TensorDesc desc, int *dst) {
   const int wave = waveIndex();
   if (wave == 0)
-    ldsFill(0, kUnwrittenValue);
+    ldsFillAndWait(0, kUnwrittenValue);
   barrier();
   if (wave == 0) {
     tensorLoad(desc);
@@ -696,7 +697,7 @@ tensor_load_zero_fill_kernel(TensorDesc desc, int *dst) {
   }
   barrier();
   if (wave == 1)
-    dst[lane()] = ldsRead((kTensorHalf + lane() % kTensorHalf) * 4);
+    dst[lane()] = ldsReadAndWait((kTensorHalf + lane() % kTensorHalf) * 4);
   if (wave == 0)
     waitTensorcnt<0>();
 }
@@ -739,11 +740,11 @@ tensor_load_padding_kernel(TensorDesc desc, int *loaded, int *concurrent) {
     tensorLoad(desc);
   barrier();
   if (wave == 1)
-    concurrent[lane()] = ldsRead(ReadOffset);
+    concurrent[lane()] = ldsReadAndWait(ReadOffset);
   if (wave == 0) {
     waitTensorcnt<0>();
     const uint32_t offset = lane() * 4 + (lane() < 16 ? 0 : kPadBytes);
-    loaded[lane()] = ldsRead(offset);
+    loaded[lane()] = ldsReadAndWait(offset);
   }
 }
 
@@ -784,7 +785,7 @@ __global__ void tensor_load_past_lds_allocation_kernel(TensorDesc desc, int *dst
   tensorLoad(desc);
   waitTensorcnt<0>();
   if (lane() < 16)
-    dst[lane()] = ldsRead(kStraddlingOffset + lane() * 4);
+    dst[lane()] = ldsReadAndWait(kStraddlingOffset + lane() * 4);
 }
 
 TEST_F(Gfx1250RaceTest, tensor_load_past_lds_allocation) {
