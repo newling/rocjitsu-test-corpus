@@ -392,6 +392,29 @@ TEST_F(Gfx1250RaceTest, tensor_load_pipeline_newest_race) {
   ExpectRace(kTensorLoadThenReadRace);
 }
 
+// Half the lanes read the completed tile; half read the pending tile.
+TEST_F(Gfx1250RaceTest, tensor_load_pipeline_straddling_race) {
+  auto *older = allocWithData<int>(kTileElements);
+  auto *newer = allocWithData<int>(kTileElements);
+  auto *dst = alloc<int>(kWave);
+  tensor_load_pipeline_kernel<kTileBytes / 2><<<1, 2 * kWave, 2 * kTileBytes>>>(
+      describe({.global = older}), describe({.global = newer, .lds_offset = kTileBytes}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorLoadThenReadRace);
+  const auto parsed = rocjitsu::test::parseRaceLogFromEnvironment();
+  ASSERT_TRUE(parsed.ok()) << parsed.error;
+  for (const auto &record : parsed.records) {
+    EXPECT_EQ(record.type, "LDS");
+    EXPECT_EQ(record.access, "read");
+    EXPECT_EQ(record.wave, 1);
+    EXPECT_GE(record.lane, kWave / 2);
+    EXPECT_LT(record.lane, kWave);
+    EXPECT_GE(record.reg, kTileBytes);
+    EXPECT_LT(record.reg, kTileBytes + kTileBytes / 2);
+  }
+}
+
 // --- A tensor store's LDS source ---
 
 // Wave 0 stores the tile; wave 1 then overwrites it in LDS. The barrier orders
