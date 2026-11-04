@@ -458,8 +458,12 @@ TEST_F(Gfx1250RaceTest, tensor_store_source_overwrite_race) {
 
 // DS writes and tensor DMA complete independently, so storing a tile the wave
 // just wrote takes a DScnt wait first.
-template <bool WaitDscnt> __global__ void tensor_store_after_ds_write_kernel(TensorDesc desc) {
-  ldsWrite(lane() * 4, 100 + lane());
+template <bool WaitDscnt, uint32_t WriteOffset = 0, int WriteElements = kTileElements>
+__global__ void tensor_store_after_ds_write_kernel(TensorDesc desc) {
+  if constexpr (WriteElements < kTileElements)
+    ldsFillAndWait(0, kUnwrittenValue);
+  if (lane() < WriteElements)
+    ldsWrite(WriteOffset + lane() * 4, 100 + lane());
   if (WaitDscnt)
     waitDscnt();
   tensorStore(desc);
@@ -478,6 +482,47 @@ TEST_F(Gfx1250RaceTest, tensor_store_dscnt) {
 TEST_F(Gfx1250RaceTest, tensor_store_missing_dscnt_race) {
   auto *dst = alloc<int>(kTileElements);
   tensor_store_after_ds_write_kernel<false><<<1, kWave, kTileBytes>>>(describe({.global = dst}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kDsWriteThenTensorStoreRace);
+}
+
+// Exercise strict containment in both directions at an interior LDS word.
+TEST_F(Gfx1250RaceTest, tensor_store_ds_subset) {
+  auto *dst = alloc<int>(kTileElements);
+  tensor_store_after_ds_write_kernel<true, 60, 1><<<1, kWave, kTileBytes>>>(
+      describe({.global = dst}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  std::vector<int> expected(kTileElements, kUnwrittenValue);
+  expected[15] = 100;
+  ExpectValues(dst, expected);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_ds_subset_race) {
+  auto *dst = alloc<int>(kTileElements);
+  tensor_store_after_ds_write_kernel<false, 60, 1><<<1, kWave, kTileBytes>>>(
+      describe({.global = dst}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kDsWriteThenTensorStoreRace);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_tensor_subset) {
+  auto *dst = alloc<int>(1);
+  tensor_store_after_ds_write_kernel<true><<<1, kWave, kTileBytes>>>(
+      describe({.global = dst, .lds_offset = 60, .tensor_elements = 1, .tile_elements = 1}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(dst, std::vector<int>{115});
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_tensor_subset_race) {
+  auto *dst = alloc<int>(1);
+  tensor_store_after_ds_write_kernel<false><<<1, kWave, kTileBytes>>>(
+      describe({.global = dst, .lds_offset = 60, .tensor_elements = 1, .tile_elements = 1}));
   RACE_HIP_CHECK(hipGetLastError());
   sync();
   ExpectRace(kDsWriteThenTensorStoreRace);
