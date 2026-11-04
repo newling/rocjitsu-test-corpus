@@ -631,6 +631,48 @@ TEST_F(Gfx1250RaceTest, tensor_store_outside_tensor_counts) {
   ExpectValues(untouched, std::vector<int>(kTileElements, kUnwrittenValue));
 }
 
+// The real store sits between two empty instructions. Waiting for at most one
+// retires the real store; waiting for two may leave it reading its LDS source.
+template <int WaitCount>
+__global__ void tensor_store_between_empty_stores_kernel(TensorDesc empty, TensorDesc real) {
+  ldsFill(0, 100 + lane());
+  ldsFill(kTileBytes, 200 + lane());
+  tensorStore(empty);
+  tensorStore(real);
+  tensorStore(empty);
+  waitTensorcnt<WaitCount>();
+  ldsWrite(lane() * 4, -1);
+  // An outstanding empty store must not claim to read its nominal LDS source.
+  ldsWrite(kTileBytes + lane() * 4, -1);
+  waitDscnt();
+  waitTensorcnt<0>();
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_between_empty_stores) {
+  auto *stored = alloc<int>(kTileElements);
+  auto *untouched = allocFilled(kTileElements, kUnwrittenValue);
+  tensor_store_between_empty_stores_kernel<1><<<1, kWave, 2 * kTileBytes>>>(
+      describe({.global = untouched, .lds_offset = kTileBytes, .tensor_elements = 0}),
+      describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(100));
+  ExpectValues(untouched, std::vector<int>(kTileElements, kUnwrittenValue));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_between_empty_stores_race) {
+  auto *stored = alloc<int>(kTileElements);
+  auto *untouched = allocFilled(kTileElements, kUnwrittenValue);
+  tensor_store_between_empty_stores_kernel<2><<<1, kWave, 2 * kTileBytes>>>(
+      describe({.global = untouched, .lds_offset = kTileBytes, .tensor_elements = 0}),
+      describe({.global = stored}));
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorStoreThenWriteRace);
+  ExpectValues(untouched, std::vector<int>(kTileElements, kUnwrittenValue));
+}
+
 // --- Elements outside the tensor are zero-filled in LDS ---
 
 constexpr uint32_t kTensorHalf = kTileElements / 2;
