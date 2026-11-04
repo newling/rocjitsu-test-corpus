@@ -1076,6 +1076,21 @@ TEST_F(Gfx1250RaceTest, tensor_load_zero_fill) {
   ExpectValues(dst, std::vector<int>(kWave, 0));
 }
 
+// Preserve the full mixed-data value check independently of the peer probe,
+// whose reads must stay confined to zero-filled bytes.
+TEST_F(Gfx1250RaceTest, tensor_load_zero_fill_full_tile) {
+  auto *src = allocWithData<int>(kTileElements);
+  auto *dst = alloc<int>(kWave);
+  tensor_load_same_wave_kernel<Wait::Tensorcnt><<<1, kWave, kTileBytes>>>(
+      describe({.global = src, .tensor_elements = kTensorHalf}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  auto expected = range(0, kTensorHalf);
+  expected.resize(kTileElements, 0);
+  ExpectValues(dst, expected);
+}
+
 TEST_F(Gfx1250RaceTest, tensor_load_zero_fill_cross_wave_race) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
