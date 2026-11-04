@@ -539,16 +539,19 @@ TEST_F(Gfx1250RaceTest, tensor_store_tensor_subset_race) {
 
 // A load into the tile an earlier store is still reading may overwrite bytes the
 // store has not read yet.
-template <bool WaitTensorcnt>
+template <bool WaitTensorcnt, uint32_t ReadOffset = 0, int ReadElements = kTileElements,
+          int LdsElements = kTileElements>
 __global__ void tensor_store_then_load_same_wave_kernel(TensorDesc store, TensorDesc load,
                                                         int *dst) {
-  ldsFillAndWait(0, 100 + lane());
+  for (uint32_t offset = 0; offset < LdsElements * 4; offset += kTileBytes)
+    ldsFillAndWait(offset, 100 + offset / 4 + lane());
   tensorStore(store);
   if (WaitTensorcnt)
     waitTensorcnt<0>();
   tensorLoad(load);
   waitTensorcnt<0>();
-  dst[lane()] = ldsReadAndWait(lane() * 4);
+  if (lane() < ReadElements)
+    dst[lane()] = ldsReadAndWait(ReadOffset + lane() * 4);
 }
 
 TEST_F(Gfx1250RaceTest, tensor_store_then_load_same_wave) {
@@ -570,6 +573,119 @@ TEST_F(Gfx1250RaceTest, tensor_store_then_load_same_wave_race) {
   auto *dst = alloc<int>(kWave);
   tensor_store_then_load_same_wave_kernel<false><<<1, kWave, kTileBytes>>>(
       describe({.global = stored}), describe({.global = src}), dst);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorStoreThenTensorLoadRace);
+}
+
+// Store-source and load-destination footprints need not have equal bounds.
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_store_subset) {
+  auto *src = allocWithData<int>(32);
+  auto *stored = alloc<int>(1);
+  auto *loaded = alloc<int>(32);
+  tensor_store_then_load_same_wave_kernel<true, 0, 32, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 60, .tensor_elements = 1, .tile_elements = 1}),
+          describe({.global = src, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(115, 1));
+  ExpectValues(loaded, range(0, 32));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_store_subset_race) {
+  auto *src = allocWithData<int>(32);
+  auto *stored = alloc<int>(1);
+  auto *loaded = alloc<int>(32);
+  tensor_store_then_load_same_wave_kernel<false, 0, 32, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 60, .tensor_elements = 1, .tile_elements = 1}),
+          describe({.global = src, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorStoreThenTensorLoadRace);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_load_subset) {
+  auto *src = allocWithData<int>(1);
+  auto *stored = alloc<int>(32);
+  auto *loaded = alloc<int>(1);
+  tensor_store_then_load_same_wave_kernel<true, 60, 1, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}),
+          describe({.global = src, .lds_offset = 60, .tensor_elements = 1, .tile_elements = 1}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(100, 32));
+  ExpectValues(loaded, range(0, 1));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_load_subset_race) {
+  auto *src = allocWithData<int>(1);
+  auto *stored = alloc<int>(32);
+  auto *loaded = alloc<int>(1);
+  tensor_store_then_load_same_wave_kernel<false, 60, 1, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}),
+          describe({.global = src, .lds_offset = 60, .tensor_elements = 1, .tile_elements = 1}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorStoreThenTensorLoadRace);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_overlap_right) {
+  auto *src = allocWithData<int>(32);
+  auto *stored = alloc<int>(32);
+  auto *loaded = alloc<int>(32);
+  tensor_store_then_load_same_wave_kernel<true, 64, 32, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}),
+          describe({.global = src, .lds_offset = 64, .tensor_elements = 32, .tile_elements = 32}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(100, 32));
+  ExpectValues(loaded, range(0, 32));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_overlap_right_race) {
+  auto *src = allocWithData<int>(32);
+  auto *stored = alloc<int>(32);
+  auto *loaded = alloc<int>(32);
+  tensor_store_then_load_same_wave_kernel<false, 64, 32, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}),
+          describe({.global = src, .lds_offset = 64, .tensor_elements = 32, .tile_elements = 32}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectRace(kTensorStoreThenTensorLoadRace);
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_overlap_left) {
+  auto *src = allocWithData<int>(32);
+  auto *stored = alloc<int>(32);
+  auto *loaded = alloc<int>(32);
+  tensor_store_then_load_same_wave_kernel<true, 0, 32, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 64, .tensor_elements = 32, .tile_elements = 32}),
+          describe({.global = src, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}), loaded);
+  RACE_HIP_CHECK(hipGetLastError());
+  sync();
+  ExpectNoRace();
+  ExpectValues(stored, range(116, 32));
+  ExpectValues(loaded, range(0, 32));
+}
+
+TEST_F(Gfx1250RaceTest, tensor_store_then_load_overlap_left_race) {
+  auto *src = allocWithData<int>(32);
+  auto *stored = alloc<int>(32);
+  auto *loaded = alloc<int>(32);
+  tensor_store_then_load_same_wave_kernel<false, 0, 32, 2 * kTileElements>
+      <<<1, kWave, 2 * kTileBytes>>>(
+          describe({.global = stored, .lds_offset = 64, .tensor_elements = 32, .tile_elements = 32}),
+          describe({.global = src, .lds_offset = 0, .tensor_elements = 32, .tile_elements = 32}), loaded);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
   ExpectRace(kTensorStoreThenTensorLoadRace);
