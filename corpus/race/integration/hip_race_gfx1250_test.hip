@@ -77,7 +77,7 @@ struct Tile {
   uint32_t lds_offset = 0;
   uint32_t tensor_elements = kTileElements; ///< Elements past this are out of the tensor.
   uint32_t tile_elements = kTileElements;   ///< Zero makes the tile a NOP.
-  uint32_t count = 1;                   ///< Zero makes this a NULL tensor.
+  uint32_t count = 1;                       ///< Zero makes this a NULL tensor.
   bool pad = false;
   uint32_t pad_interval = 0; ///< 2 << pad_interval dwords between pads.
   uint32_t pad_amount = 0;   ///< pad_amount + 1 dwords of padding.
@@ -92,11 +92,11 @@ TensorDesc describe(const Tile &tile) {
   words[3] = static_cast<uint32_t>((address >> 32) & 0x1ffffffu) | (2u << 30); // type 2.
   words[4] = (2u << 16) | (uint32_t{tile.pad} << 20) | (tile.pad_interval << 22) |
              (tile.pad_amount << 25);
-  words[5] = (tile.tensor_elements & 0xffffu) << 16;          // tensor_dim0[15:0].
-  words[6] = (tile.tensor_elements >> 16) | (1u << 16);        // tensor_dim1 = 1.
-  words[7] = (tile.tile_elements & 0xffffu) << 16;             // tile_dim0.
-  words[8] = 1;                                                // tile_dim1.
-  words[9] = kTileElements;                                        // tensor_dim0_stride.
+  words[5] = (tile.tensor_elements & 0xffffu) << 16;    // tensor_dim0[15:0].
+  words[6] = (tile.tensor_elements >> 16) | (1u << 16); // tensor_dim1 = 1.
+  words[7] = (tile.tile_elements & 0xffffu) << 16;      // tile_dim0.
+  words[8] = 1;                                         // tile_dim1.
+  words[9] = kTileElements;                             // tensor_dim0_stride.
   TensorDesc desc;
   std::memcpy(&desc.group0, &words[0], sizeof(desc.group0));
   std::memcpy(&desc.group1, &words[4], sizeof(desc.group1));
@@ -509,8 +509,6 @@ TEST_F(Gfx1250RaceTest, tensor_iterations_do_not_add_counter_tokens_race) {
   sync();
   ExpectRace(kTensorLoadThenReadRace);
 }
-
-// --- LDS addresses past the workgroup's allocation ---
 
 // --- A tensor store's LDS source ---
 
