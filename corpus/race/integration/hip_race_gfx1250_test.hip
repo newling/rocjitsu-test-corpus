@@ -257,13 +257,13 @@ TEST_F(Gfx1250RaceTest, vgpr_loadcnt_race) {
 
 // --- The issuing wave must wait for TENSORCNT, and only TENSORCNT ---
 
-enum class Wait { Tensorcnt, None, OtherCounters };
+enum class WaitMode { Tensorcnt, None, OtherCounters };
 
-template <Wait W> __global__ void tensor_load_same_wave_kernel(TensorDesc desc, int *dst) {
+template <WaitMode Mode> __global__ void tensor_load_same_wave_kernel(TensorDesc desc, int *dst) {
   tensorLoad(desc);
-  if (W == Wait::Tensorcnt)
+  if (Mode == WaitMode::Tensorcnt)
     waitTensorcnt<0>();
-  if (W == Wait::OtherCounters)
+  if (Mode == WaitMode::OtherCounters)
     asm volatile("s_wait_loadcnt 0\n"
                  "s_wait_dscnt 0" ::: "memory");
   dst[threadIdx.x] = ldsReadAndWait(threadIdx.x * 4);
@@ -273,8 +273,8 @@ template <Wait W> __global__ void tensor_load_same_wave_kernel(TensorDesc desc, 
 TEST_F(Gfx1250RaceTest, tensor_load_tensorcnt) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
-  tensor_load_same_wave_kernel<Wait::Tensorcnt><<<1, kWave, kTileBytes>>>(describe({.global = src}),
-                                                                          dst);
+  tensor_load_same_wave_kernel<WaitMode::Tensorcnt>
+      <<<1, kWave, kTileBytes>>>(describe({.global = src}), dst);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
   ExpectNoRace();
@@ -284,8 +284,8 @@ TEST_F(Gfx1250RaceTest, tensor_load_tensorcnt) {
 TEST_F(Gfx1250RaceTest, tensor_load_missing_tensorcnt_race) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
-  tensor_load_same_wave_kernel<Wait::None><<<1, kWave, kTileBytes>>>(describe({.global = src}),
-                                                                     dst);
+  tensor_load_same_wave_kernel<WaitMode::None>
+      <<<1, kWave, kTileBytes>>>(describe({.global = src}), dst);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
   ExpectRace(kTensorLoadThenReadRaceExpectation);
@@ -295,7 +295,7 @@ TEST_F(Gfx1250RaceTest, tensor_load_missing_tensorcnt_race) {
 TEST_F(Gfx1250RaceTest, tensor_load_other_counters_race) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
-  tensor_load_same_wave_kernel<Wait::OtherCounters>
+  tensor_load_same_wave_kernel<WaitMode::OtherCounters>
       <<<1, kWave, kTileBytes>>>(describe({.global = src}), dst);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
@@ -304,19 +304,19 @@ TEST_F(Gfx1250RaceTest, tensor_load_other_counters_race) {
 
 // --- Other waves need the issuing wave's wait and a barrier ---
 
-enum class Sync { WaitAndBarrier, WaitOnly, BarrierOnly };
+enum class SyncMode { WaitAndBarrier, WaitOnly, BarrierOnly };
 
 // Wave 0 loads the tile; wave 1 reads it.
-template <Sync S>
+template <SyncMode Mode>
 __global__ __attribute__((amdgpu_flat_work_group_size(2 * kWave, 2 * kWave))) void
 tensor_load_cross_wave_kernel(TensorDesc desc, int *dst) {
   const int wave = waveIndex();
   if (wave == 0) {
     tensorLoad(desc);
-    if (S != Sync::BarrierOnly)
+    if (Mode != SyncMode::BarrierOnly)
       waitTensorcnt<0>();
   }
-  if (S != Sync::WaitOnly)
+  if (Mode != SyncMode::WaitOnly)
     barrier();
   if (wave == 1)
     dst[lane()] = ldsReadAndWait(lane() * 4);
@@ -327,7 +327,7 @@ tensor_load_cross_wave_kernel(TensorDesc desc, int *dst) {
 TEST_F(Gfx1250RaceTest, tensor_load_cross_wave) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
-  tensor_load_cross_wave_kernel<Sync::WaitAndBarrier>
+  tensor_load_cross_wave_kernel<SyncMode::WaitAndBarrier>
       <<<1, 2 * kWave, kTileBytes>>>(describe({.global = src}), dst);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
@@ -338,7 +338,7 @@ TEST_F(Gfx1250RaceTest, tensor_load_cross_wave) {
 TEST_F(Gfx1250RaceTest, tensor_load_cross_wave_no_barrier_race) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
-  tensor_load_cross_wave_kernel<Sync::WaitOnly>
+  tensor_load_cross_wave_kernel<SyncMode::WaitOnly>
       <<<1, 2 * kWave, kTileBytes>>>(describe({.global = src}), dst);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
@@ -351,7 +351,7 @@ TEST_F(Gfx1250RaceTest, tensor_load_cross_wave_no_barrier_race) {
 TEST_F(Gfx1250RaceTest, tensor_load_cross_wave_no_tensorcnt_race) {
   auto *src = allocWithData<int>(kTileElements);
   auto *dst = alloc<int>(kWave);
-  tensor_load_cross_wave_kernel<Sync::BarrierOnly>
+  tensor_load_cross_wave_kernel<SyncMode::BarrierOnly>
       <<<1, 2 * kWave, kTileBytes>>>(describe({.global = src}), dst);
   RACE_HIP_CHECK(hipGetLastError());
   sync();
