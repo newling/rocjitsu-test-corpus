@@ -1553,36 +1553,44 @@ constexpr int kKmcntCapacity = 31;   // 2^5 - 1.
   "s70"
 
 static constexpr RaceExpectation kLoadcntCapacityRaceExpectation{
-    .findings = FindingCount::OneOrMore,
+    .findings = FindingCount::One,
     .type = "VGPR",
     .producer = "global_load_b32",
     .consumer = "v_mov_b32",
 };
 
 static constexpr RaceExpectation kDscntCapacityRaceExpectation{
-    .findings = FindingCount::OneOrMore,
+    .findings = FindingCount::One,
     .type = "VGPR",
     .producer = "ds_load_b32",
     .consumer = "v_mov_b32",
 };
 
 static constexpr RaceExpectation kKmcntCapacityRaceExpectation{
-    .findings = FindingCount::OneOrMore,
+    .findings = FindingCount::One,
     .type = "SGPR",
     .producer = "s_load_b32",
     .consumer = "v_mov_b32",
 };
 
 static constexpr RaceExpectation kAsyncLoadThenReadRaceExpectation{
-    .findings = FindingCount::OneOrMore,
+    .findings = FindingCount::One,
     .type = "LDS",
     .access = "read",
     .producer = "global_load_async_to_lds_b32",
     .consumer = "ds_load_b32",
 };
 
+static constexpr RaceExpectation kTensorcntCapacityRaceExpectation{
+    .findings = FindingCount::One,
+    .type = "LDS",
+    .access = "read",
+    .producer = "tensor_load_to_lds",
+    .consumer = "ds_load_b32",
+};
+
 static constexpr RaceExpectation kDsWriteThenReadRaceExpectation{
-    .findings = FindingCount::OneOrMore,
+    .findings = FindingCount::One,
     .type = "LDS",
     .access = "read",
     .producer = "ds_store_b32",
@@ -1876,7 +1884,7 @@ TEST_F(Gfx1250RaceTest, tensorcnt_below_capacity_race) {
       describe({.global = src, .lds_offset = kTileBytes, .count = 0}), alloc<int>(kWave));
   RACE_HIP_CHECK(hipGetLastError());
   sync();
-  ExpectRace(kTensorLoadThenReadRaceExpectation);
+  ExpectRace(kTensorcntCapacityRaceExpectation);
 }
 
 // Wave 0 writes tile 0, then issues `Younger` younger DS writes to tile 1 with
