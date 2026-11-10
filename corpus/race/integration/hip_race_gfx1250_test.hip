@@ -1519,7 +1519,6 @@ TEST_F(Gfx1250RaceTest, tensor_load_builtin) {
   ExpectValues(dst, range(0));
 }
 
-
 // --- Counter-capacity backpressure ---
 
 // Each memory counter is finite, and issuing an instruction that would overflow
