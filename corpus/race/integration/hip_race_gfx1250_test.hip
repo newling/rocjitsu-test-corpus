@@ -1920,17 +1920,16 @@ TEST_F(Gfx1250RaceTest, asynccnt_mixed_types_do_not_complete_a_load_race) {
   ExpectRace(kAsyncLoadThenReadRaceExpectation);
 }
 
-// An async load into tile 0, 62 younger async loads into tiles 1 to 62, then a
-// 64th async-counted instruction issued with EXEC zero, then a DS read of tile
-// 0. An EXEC-zero instruction counts unless the counters its encoding names
-// are all zero (CDNA5 ISA 3.2.2.1). A VMEM async load names ASYNCcnt, so it
-// takes the last slot and completes the oldest load. With `Arrive`, the 64th
-// is ds_atomic_async_barrier_arrive_b64, an LDS instruction that counts on
-// ASYNCcnt but is skipped whenever DScnt is zero, as it is here, so it proves
-// nothing about the pending loads.
+// With async loads, issue 63 has EXEC zero and issue 64 is active. The masked
+// load must hold its ASYNCcnt slot for the final load to complete the oldest
+// one. VMEM cannot be skipped while ASYNCcnt is nonzero (CDNA5 ISA 3.2.2.1).
+// With `Arrive`, issue 64 is instead an EXEC-zero
+// ds_atomic_async_barrier_arrive_b64. It uses ASYNCcnt but is an LDS
+// instruction, so it may be skipped when DScnt is zero, as it is here. Its
+// issue therefore does not prove any pending async load complete.
 template <bool Arrive> __global__ void asynccnt_exec_zero_kernel(const int *src, int *dst) {
-  constexpr int kYounger = kCounterCapacity - 1;
-  constexpr uint32_t kCellOffset = (kYounger + 2) * kTileBytes;
+  constexpr int kYounger = Arrive ? kCounterCapacity - 1 : kCounterCapacity - 2;
+  constexpr uint32_t kCellOffset = (kCounterCapacity + 1) * kTileBytes;
   const uint32_t offset = lane() * kElementBytes;
   int saved_exec;
   asm volatile("global_load_async_to_lds_b32 %[lds], %[offset], %[base]\n"
@@ -1949,6 +1948,11 @@ template <bool Arrive> __global__ void asynccnt_exec_zero_kernel(const int *src,
                "offset:race_tile*%c[tile_bytes]\n"
                ".endif\n"
                "s_mov_b32 exec_lo, %[saved_exec]\n"
+               ".if %c[arrive] == 0\n"
+               ".set race_tile, race_tile + 1\n"
+               "global_load_async_to_lds_b32 %[lds], %[offset], %[base] "
+               "offset:race_tile*%c[tile_bytes]\n"
+               ".endif\n"
                : [saved_exec] "=&s"(saved_exec)
                : [lds] "v"(offset), [offset] "v"(offset), [base] "s"(src), [cell] "v"(kCellOffset),
                  [younger_loads] "n"(kYounger), [tile_bytes] "n"(kTileBytes),
@@ -2069,8 +2073,8 @@ TEST_F(Gfx1250RaceTest, dscnt_capacity_cross_wave_barrier_race) {
 // VMEM portion with other VMEM loads, so a FLAT fills both counters and counts
 // toward partial waits on both, even when its addresses use only one memory.
 
-// The FLAT instruction that takes the last slot: a load, a store, or a load
-// issued with EXEC zero. With EXEC zero, a FLAT still counts on both counters
+// The FLAT form used by the probes: a load, a store, or a load issued with
+// EXEC zero. With EXEC zero, a FLAT still counts on both counters
 // unless DScnt, LOADcnt, STOREcnt, ASYNCcnt and TENSORcnt are all zero (CDNA5
 // ISA 3.2.2.1), and here the younger operations keep them nonzero.
 // The asm compares a form's value with `.if`, so each value is fixed.
@@ -2079,9 +2083,12 @@ enum class FlatForm { Load = 0, Store = 1, ExecZeroLoad = 2 };
 // A DS read, `Younger` younger DS reads, then a FLAT access to global memory,
 // then a use of the oldest DS result. The FLAT takes the last DScnt slot. A
 // store writes `scratch`, so it cannot conflict with the kernel's own stores.
+// The EXEC-zero form moves the FLAT before the last DS read, so that read
+// encounters a full counter only if the masked FLAT holds its slot.
 template <int Younger, FlatForm Form = FlatForm::Load>
 __global__ void flat_dscnt_capacity_kernel(const int *src, int *scratch, int *dst) {
   static_assert(Younger < kCounterCapacity);
+  constexpr int kBeforeFlat = Younger - (Form == FlatForm::ExecZeroLoad ? 1 : 0);
   ldsFillAndWait(0, 100 + lane());
   int producer, younger, flat_result, saved_exec, result;
   asm volatile("ds_load_b32 %[producer], %[address]\n"
@@ -2095,6 +2102,7 @@ __global__ void flat_dscnt_capacity_kernel(const int *src, int *scratch, int *ds
                "s_mov_b32 exec_lo, 0\n"
                "flat_load_b32 %[flat_result], %[flat_address]\n"
                "s_mov_b32 exec_lo, %[saved_exec]\n"
+               "ds_load_b32 %[younger], %[address]\n"
                ".else\n"
                "flat_load_b32 %[flat_result], %[flat_address]\n"
                ".endif\n"
@@ -2104,7 +2112,7 @@ __global__ void flat_dscnt_capacity_kernel(const int *src, int *scratch, int *ds
                  [result] "=&v"(result)
                : [address] "v"(lane() * kElementBytes), [flat_address] "v"(&src[lane()]),
                  [store_address] "v"(&scratch[lane()]), [store_value] "v"(1),
-                 [younger_reads] "n"(Younger), [form] "n"(static_cast<int>(Form))
+                 [younger_reads] "n"(kBeforeFlat), [form] "n"(static_cast<int>(Form))
                : "memory");
   asm volatile("s_wait_loadcnt 0\n"
                "s_wait_storecnt 0\n"
@@ -2233,11 +2241,14 @@ TEST_F(Gfx1250RaceTest, flat_exec_zero_dscnt_below_capacity_race) {
 
 // A global load, `Younger` younger global loads, then a FLAT load from LDS,
 // then a use of the oldest load's result. The FLAT takes the last LOADcnt slot.
+// The EXEC-zero form moves the FLAT before the last global load, so that load
+// encounters a full counter only if the masked FLAT holds its slot.
 // `tile` is the kernel's only LDS allocation, so it starts at offset 0.
 template <int Younger, FlatForm Form = FlatForm::Load>
 __global__ void flat_loadcnt_capacity_kernel(const int *src, int *dst) {
   static_assert(Younger < kCounterCapacity);
   static_assert(Form != FlatForm::Store);
+  constexpr int kBeforeFlat = Younger - (Form == FlatForm::ExecZeroLoad ? 1 : 0);
   __shared__ int tile[kTileElements];
   ldsFillAndWait(0, 100 + lane());
   int producer, flat_result, saved_exec, result;
@@ -2252,6 +2263,7 @@ __global__ void flat_loadcnt_capacity_kernel(const int *src, int *dst) {
                "s_mov_b32 exec_lo, 0\n"
                "flat_load_b32 %[flat_result], %[flat_address]\n"
                "s_mov_b32 exec_lo, %[saved_exec]\n"
+               "global_load_b32 v[race_vgpr], %[address], off\n"
                ".else\n"
                "flat_load_b32 %[flat_result], %[flat_address]\n"
                ".endif\n"
@@ -2259,7 +2271,7 @@ __global__ void flat_loadcnt_capacity_kernel(const int *src, int *dst) {
                : [producer] "=&v"(producer), [flat_result] "=&v"(flat_result),
                  [saved_exec] "=&s"(saved_exec), [result] "=&v"(result)
                : [address] "v"(&src[lane()]), [flat_address] "v"(&tile[lane()]),
-                 [younger_loads] "n"(Younger), [form] "n"(static_cast<int>(Form))
+                 [younger_loads] "n"(kBeforeFlat), [form] "n"(static_cast<int>(Form))
                : "memory", RACE_YOUNGER_VGPR_CLOBBERS);
   asm volatile("s_wait_loadcnt 0\n"
                "s_wait_dscnt 0" ::: "memory");
