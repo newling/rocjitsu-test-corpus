@@ -34,8 +34,8 @@ inline void checkHip(hipError_t status, const char *operation, const char *file,
 
 /// Common issue-capacity probes. Target suites instantiate these with their
 /// architectural counter capacities and keep target-specific expectations.
-/// Each probe passes its LDS word's address into the asm, so the compiler keeps
-/// the `lds` array and the store that fills it.
+/// The LDS probes pass their LDS word's address into the asm, so the compiler
+/// keeps the `lds` array and the store that fills it.
 template <int YoungerLoads> __global__ void vmcnt_capacity_kernel(const float *src, float *dst) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   float producer, younger, result;

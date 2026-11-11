@@ -1522,10 +1522,10 @@ TEST_F(Gfx1250RaceTest, tensor_load_builtin) {
 // --- Counter-capacity backpressure ---
 
 // Each memory counter is finite, and issuing an instruction that would overflow
-// one stalls the wave until the oldest operation completes (CDNA5 ISA 5.7.1).
+// one stalls the wave until enough operations complete (CDNA5 ISA 5.7.1).
 // For a counter whose operations complete in issue order, that proves the
-// oldest one complete without an explicit wait. Each case issues an oldest
-// operation, then enough younger operations on the same counter to fill it
+// oldest one complete without an explicit wait. Each capacity pair issues an
+// oldest operation, then enough younger operations on the same counter to fill it
 // (clean) or to stop one short (race), and uses the oldest result with no wait.
 // Cases named for what does not happen (`*_does_not_*` and `*_do_not_*`) have
 // no clean partner: each shows that a full counter of one kind, or completions
@@ -1603,9 +1603,8 @@ static constexpr RaceExpectation kDsWriteThenReadRaceExpectation{
 
 // A load, `Younger` younger loads, then a use of the oldest load's result. With
 // `ExecZeroBeforeLast`, the second-to-last younger load runs with EXEC zero and
-// the last one is active. The EXEC-zero load still holds a LOADcnt slot,
-// because VMEM is skipped only when EXEC is zero and LOADcnt, STOREcnt,
-// ASYNCcnt and TENSORcnt are all zero (CDNA5 ISA 3.2.2.1). So it is the last,
+// the last one is active. While an older load is pending, LOADcnt is nonzero,
+// so the EXEC-zero load cannot be skipped (CDNA5 ISA 3.2.2.1). It is the last,
 // active load's issue that finds the counter full, and only if the EXEC-zero
 // load's slot is counted.
 template <int Younger, bool ExecZeroBeforeLast = false>
