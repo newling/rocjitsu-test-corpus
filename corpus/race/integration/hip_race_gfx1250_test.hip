@@ -1761,8 +1761,8 @@ TEST_F(Gfx1250RaceTest, partial_wait_without_global_inv_race) {
   ExpectRace(kLoadcntCapacityRaceExpectation);
 }
 
-// Loads and stores use separate counters (CDNA5 ISA 5.7.1), so filling STOREcnt
-// says nothing about a pending load.
+// Loads and stores use separate counters (CDNA5 ISA 5.7.1), so backpressure
+// on STOREcnt must leave the load pending. The last store needs a free slot.
 __global__ void storecnt_pressure_kernel(const int *src, int *scratch, int *dst) {
   int producer, result;
   asm volatile("global_load_b32 %[producer], %[load_address], off\n"
@@ -1772,7 +1772,7 @@ __global__ void storecnt_pressure_kernel(const int *src, int *scratch, int *dst)
                "v_mov_b32 %[result], %[producer]\n"
                : [producer] "=&v"(producer), [result] "=&v"(result)
                : [load_address] "v"(&src[threadIdx.x]), [store_address] "v"(&scratch[threadIdx.x]),
-                 [store_value] "v"(1), [stores] "n"(kCounterCapacity)
+                 [store_value] "v"(1), [stores] "n"(kCounterCapacity + 1)
                : "memory");
   asm volatile("s_wait_loadcnt 0\n"
                "s_wait_storecnt 0" ::: "memory");
